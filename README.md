@@ -8,15 +8,17 @@ Staff pick a store and a section (Front, Back, or Break Room), scan a barcode wi
 
 Counts can be pieces (full boxes plus loose, using the pack size in the item name), weight in pounds and ounces, or — in Front only — how full the bin is. Cottleville asks about a second bin. The session list shows the piece total for each entry and a combined total when the same item was counted in more than one section. Counting the same item twice in one section asks whether to add the new count or replace the earlier one.
 
-## What is saved today
+## Google Sheet
 
-Counts, learned barcodes, and products added on the phone stay in this phone's browser storage. They are not written to the Google Sheet yet. That is the next step. A new product is marked pending: the sheet step should add a row on that store's month tab (column A item, column B ticket value) and a row on the FunZone Barcodes sheet.
+Once the web app link and PIN are saved on the phone (menu → Sheet connection), counts, barcodes, and new products are written to the live spreadsheets. The phone keeps a copy so counting still works if the connection drops. Until that link is saved, the app uses the bundled September 2026 sample lists and does not change the spreadsheets.
 
-Item names, ticket values, full-bin counts, and pieces-per-ounce are the September 2026 lists (25 items per store). Six real barcodes are included. `075656049338` is Oh So Jelle Taba Pets at Wentzville and Oh So Jelle Pets at Cottleville. Cottleville does not carry the headphones (`097138501967`). Squeeze Pyramid (`097138502094`) is not on either list, so the app asks which item it is.
+Cassidy's setup steps are in [SETUP.md](SETUP.md). The script she pastes is `apps-script/Code.gs`. Which cells a count changes is decided in `mapCountOntoRow` in `js/sheetmap.js`.
+
+The menu has a Testing mode. "Don't save counts", "Don't save barcodes", and "Don't save new items" each block only that write. The session list on the phone still updates. A Testing badge stays in the header while any switch is on.
 
 ## Data layer
 
-`js/data.js` is the only module that knows where items, barcodes, and counts come from:
+`js/data.js` is the only module the screens talk to:
 
 - `getItems(store)`
 - `lookupBarcode(code, store, format)`
@@ -24,7 +26,7 @@ Item names, ticket values, full-bin counts, and pieces-per-ounce are the Septemb
 - `saveCount(entry, replaceIds)`
 - `addItem(store, { name, ticketValue })` for a product that is not on the list yet
 
-A later change can point those four functions at Google Sheets without rewriting the screens. Barcodes stay strings so leading zeros are kept.
+Barcodes stay strings so leading zeros are kept. The six real starter barcodes are still in this file for phones that are not connected yet. `075656049338` is Oh So Jelle Taba Pets at Wentzville and Oh So Jelle Pets at Cottleville. Cottleville does not carry the headphones (`097138501967`). Squeeze Pyramid (`097138502094`) is not on either September list, so an unconnected phone asks which item it is.
 
 ## Run it locally
 

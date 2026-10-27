@@ -1,23 +1,25 @@
 /**
  * Data layer for Fun Zone Inventory.
  *
- * The screens only talk to this file. Google Sheets can replace the bodies
- * of getItems, lookupBarcode, saveBarcode, and saveCount later. Nothing
- * else should know whether a number came from the bundled Sept 2026 lists,
- * localStorage, or (later) a sheet.
+ * The screens only talk to this file. Google Sheets is the source of truth
+ * once a web app link is saved (see js/config.js and the Sheet connection
+ * screen). localStorage is the offline copy: the last item list, the last
+ * barcode list, the session on this phone, and anything that could not be
+ * sent yet.
  *
- * v1 keeps:
- * - the two store catalogs and the six real barcodes in this file
- * - barcodes a phone has learned, in localStorage
- * - products added on the phone, in localStorage, marked pending
- * - the current counting session, in localStorage
+ * Until that link is saved, the bundled September 2026 lists and the six
+ * real barcodes in this file are the fallback. A pending item still needs a
+ * row on that store's month tab (column A name, column B ticket value) and
+ * a row on the FunZone Barcodes sheet.
  *
- * A pending item still needs a row on that store's month tab (column A item
- * name, column B ticket value) and each pending barcode needs a row on the
- * FunZone Barcodes sheet. getPendingSheetRows() is the list to write.
+ * Which cells a count changes is decided only in js/sheetmap.js
+ * (mapCountOntoRow). The Apps Script copy of that function writes the cells.
  *
  * Barcode strings keep their leading zeros. They are never turned into numbers.
  */
+
+import { SCRIPT_URL } from "./config.js";
+import { countSheetDelta, entryAmount } from "./sheetmap.js";
 
 export const STORES = [
   { id: "WPR", name: "Wentzville" },
@@ -114,9 +116,28 @@ const KEYS = {
   packs: "fz-pack-sizes",
   prefs: "fz-prefs",
   added: "fz-added-items",
+  testing: "fz-testing",
+  connection: "fz-sheet-connection",
+  catalog: "fz-sheet-catalog",
+  barcodes: "fz-sheet-barcodes",
+  outbox: "fz-sheet-outbox",
+  status: "fz-sheet-status",
 };
 
-const mem = { learned: null, session: null, packs: null, added: null };
+const mem = {
+  learned: null,
+  session: null,
+  packs: null,
+  added: null,
+  catalog: null,
+  barcodes: undefined,
+  outbox: null,
+};
+
+const ZERO_AMOUNT = { pieces: 0, ounces: 0, quarters: 0 };
+let sheetClient = null;
+let chain = Promise.resolve();
+let pumping = false;
 
 function readJSON(key, fallback) {
   try {
@@ -168,10 +189,404 @@ function readAdded() {
   return mem.added;
 }
 
+function readCatalog() {
+  if (mem.catalog == null) mem.catalog = readJSON(KEYS.catalog, {});
+  return mem.catalog;
+}
+
+function readBarcodeCache() {
+  if (mem.barcodes === undefined) {
+    const raw = globalThis.localStorage?.getItem(KEYS.barcodes);
+    const saved = raw ? readJSON(KEYS.barcodes, null) : null;
+    mem.barcodes = saved && Array.isArray(saved.rows) ? saved : null;
+  }
+  return mem.barcodes;
+}
+
+function readOutbox() {
+  if (mem.outbox == null) {
+    const saved = readJSON(KEYS.outbox, []);
+    mem.outbox = Array.isArray(saved) ? saved : [];
+  }
+  return mem.outbox;
+}
+
+function writeOutbox(jobs) {
+  mem.outbox = jobs;
+  writeJSON(KEYS.outbox, jobs);
+}
+
+function sheetItems(store) {
+  const block = readCatalog()[store];
+  if (!block || !Array.isArray(block.items)) return null;
+  return block.items.map((item) => ({
+    name: String(item.name || "").trim(),
+    tickets: item.tickets == null || item.tickets === "" ? null : Number(item.tickets),
+    fullBin: item.fullBin > 0 ? Number(item.fullBin) : null,
+    perOz: item.perOz > 0 ? Number(item.perOz) : null,
+    barcode: item.barcode || null,
+  })).filter((item) => item.name);
+}
+
 function storeItems(store) {
-  const catalog = ITEMS[store] || [];
-  const added = readAdded()[store] || [];
-  return [...catalog, ...added];
+  const fromSheet = sheetItems(store);
+  const catalog = fromSheet || (ITEMS[store] || []).map((item) => ({ ...item }));
+  const names = new Set(catalog.map((item) => item.name.toLowerCase()));
+  const extras = (readAdded()[store] || []).filter((item) => item?.name && !names.has(item.name.toLowerCase()));
+  return [...catalog, ...extras];
+}
+
+function cachedBarcodeRows() {
+  const saved = readBarcodeCache();
+  return saved && Array.isArray(saved.rows) ? saved.rows : null;
+}
+
+export function getTesting() {
+  const saved = readJSON(KEYS.testing, {});
+  return {
+    skipCounts: !!saved.skipCounts,
+    skipBarcodes: !!saved.skipBarcodes,
+    skipItems: !!saved.skipItems,
+  };
+}
+
+export function setTesting(partial = {}) {
+  const next = { ...getTesting(), ...partial };
+  writeJSON(KEYS.testing, {
+    skipCounts: !!next.skipCounts,
+    skipBarcodes: !!next.skipBarcodes,
+    skipItems: !!next.skipItems,
+  });
+  return getTesting();
+}
+
+export function testingOn() {
+  const flags = getTesting();
+  return flags.skipCounts || flags.skipBarcodes || flags.skipItems;
+}
+
+export function getConnection() {
+  const saved = readJSON(KEYS.connection, {});
+  const savedUrl = String(saved.url || "").trim();
+  const url = savedUrl || String(SCRIPT_URL || "").trim();
+  const pin = String(saved.pin || "");
+  return { url, pin, configured: url.length > 0, fromPhone: savedUrl.length > 0 };
+}
+
+export function saveConnection({ url, pin } = {}) {
+  writeJSON(KEYS.connection, {
+    url: String(url || "").trim(),
+    pin: String(pin ?? ""),
+  });
+  queueUnsynced();
+  return getConnection();
+}
+
+export function getSheetStatus() {
+  const saved = readJSON(KEYS.status, {});
+  return {
+    error: saved.error || "",
+    message: saved.message || "",
+    tab: saved.tab || "",
+    okAt: saved.okAt || null,
+  };
+}
+
+function setSheetStatus(partial) {
+  writeJSON(KEYS.status, { ...getSheetStatus(), ...partial });
+}
+
+export function setSheetClient(client) {
+  sheetClient = client;
+}
+
+export function sheetEnabled() {
+  return !!sheetClient || getConnection().configured;
+}
+
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function jobKey(job) {
+  if (job.action === "addItem") return "add:" + job.store + ":" + job.name;
+  if (job.action === "saveBarcode") return "bar:" + job.store + ":" + job.code + ":" + job.name;
+  return "job:" + job.id;
+}
+
+function publicPayload(action, body) {
+  const payload = { action };
+  for (const [key, value] of Object.entries(body || {})) {
+    if (key === "action" || key === "id" || key === "entryId" || key === "undo") continue;
+    payload[key] = value;
+  }
+  return payload;
+}
+
+async function sheetRequest(action, body) {
+  const payload = publicPayload(action, body);
+  let data;
+  if (sheetClient) {
+    data = await sheetClient(payload);
+  } else {
+    const conn = getConnection();
+    if (!conn.configured) {
+      const err = new Error("Google Sheet is not connected yet.");
+      err.code = "not-configured";
+      throw err;
+    }
+    let text = "";
+    try {
+      const response = await fetch(conn.url, {
+        method: "POST",
+        redirect: "follow",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ ...payload, pin: conn.pin }),
+      });
+      text = await response.text();
+    } catch {
+      const err = new Error("Couldn't reach the sheet. Check the link, and that the script is deployed as Anyone.");
+      err.code = "offline";
+      throw err;
+    }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      const err = new Error("That link didn't answer with sheet data. Check the web app URL.");
+      err.code = "bad-response";
+      throw err;
+    }
+  }
+  if (!data || data.ok === false) {
+    const err = new Error(data?.message || data?.error || "The sheet didn't accept that.");
+    err.code = data?.error || "sheet-error";
+    throw err;
+  }
+  return data;
+}
+
+function isPermanent(err) {
+  return err?.code === "not-on-sheet" || err?.code === "unknown-action";
+}
+
+function schedulePump() {
+  chain = chain.then(() => pumpAll()).catch(() => {});
+  return chain;
+}
+
+export function whenSheetIdle() {
+  return chain;
+}
+
+async function pumpAll() {
+  if (pumping) return;
+  pumping = true;
+  try {
+    for (;;) {
+      const box = readOutbox();
+      if (!box.length) break;
+      const job = box[0];
+      try {
+        const result = await sheetRequest(job.action, job);
+        const current = readOutbox();
+        if (current[0] && current[0].id === job.id) current.shift();
+        else {
+          const index = current.findIndex((item) => item.id === job.id);
+          if (index >= 0) current.splice(index, 1);
+        }
+        writeOutbox(current);
+        markJobDone(job, result);
+      } catch (err) {
+        markJobFailed(job, err);
+        if (!isPermanent(err)) break;
+        const current = readOutbox();
+        const index = current.findIndex((item) => item.id === job.id);
+        if (index >= 0) current.splice(index, 1);
+        writeOutbox(current);
+      }
+    }
+  } finally {
+    pumping = false;
+  }
+}
+
+function markEntry(entryId, sync, extra) {
+  if (entryId == null) return;
+  const session = readSession();
+  const entry = session.entries.find((item) => item.id === entryId);
+  if (!entry) return;
+  entry.sheetSync = sync;
+  if (extra) Object.assign(entry, extra);
+  writeJSON(KEYS.session, session);
+}
+
+function markJobDone(job, result) {
+  if (job.action === "applyCount") reconcileCount(job, result || {});
+  if (job.action === "addItem") clearItemPending(job.store, job.name);
+  if (job.action === "saveBarcode") clearBarcodePending(job.store, job.code);
+  const status = getSheetStatus();
+  setSheetStatus({ error: "", message: status.tab ? status.message : "", okAt: Date.now() });
+}
+
+function reconcileCount(job, result) {
+  const session = readSession();
+  const entry = session.entries.find((item) => item.id === job.entryId);
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  if (entry && entry.sheetApplied && job.delta) {
+    const skipPiece = skipped.some((item) => item.column === "J" || item.column === "K" || item.column === "L" || item.reason === "unknown section");
+    const skipWeight = skipped.some((item) => item.column === "F" || item.column === "G");
+    const skipBin = skipped.some((item) => item.column === "U");
+    if (skipPiece) entry.sheetApplied.pieces -= Number(job.delta.pieces) || 0;
+    if (skipWeight) entry.sheetApplied.ounces -= Number(job.delta.ounces) || 0;
+    if (skipBin) entry.sheetApplied.quarters -= Number(job.delta.quarters) || 0;
+    entry.sheetSync = skipped.length ? "partial" : "saved";
+    entry.sheetError = skipped.length
+      ? "A formula is in that cell, so the sheet was left alone."
+      : "";
+  } else if (entry) {
+    entry.sheetSync = "saved";
+  }
+  writeJSON(KEYS.session, session);
+}
+
+function markJobFailed(job, err) {
+  if (job.action === "applyCount" && isPermanent(err)) {
+    const session = readSession();
+    const entry = session.entries.find((item) => item.id === job.entryId);
+    if (entry && entry.sheetApplied && job.delta) {
+      entry.sheetApplied = {
+        pieces: (Number(entry.sheetApplied.pieces) || 0) - (Number(job.delta.pieces) || 0),
+        ounces: (Number(entry.sheetApplied.ounces) || 0) - (Number(job.delta.ounces) || 0),
+        quarters: (Number(entry.sheetApplied.quarters) || 0) - (Number(job.delta.quarters) || 0),
+      };
+      entry.sheetSync = "error";
+      entry.sheetError = err.message;
+      writeJSON(KEYS.session, session);
+    }
+  } else if (job.entryId != null) {
+    markEntry(job.entryId, "queued", { sheetError: err.message || "" });
+  }
+  setSheetStatus({ error: err.code || "offline", message: err.message || "Couldn't reach the sheet." });
+}
+
+function enqueue(job) {
+  const box = readOutbox();
+  const record = { id: makeId(), ...job };
+  const key = jobKey(record);
+  if (job.action !== "applyCount" && box.some((item) => jobKey(item) === key)) {
+    schedulePump();
+    return;
+  }
+  box.push(record);
+  writeOutbox(box);
+  schedulePump();
+}
+
+function clearItemPending(store, name) {
+  const added = readAdded();
+  const list = added[store] || [];
+  for (const item of list) {
+    if (item.name === name) delete item.pending;
+  }
+  writeJSON(KEYS.added, added);
+}
+
+function clearBarcodePending(store, code) {
+  const learned = readLearned();
+  const normalized = normalizeCode(code);
+  const row = learned[store + ":" + normalized];
+  if (row) {
+    delete row.pending;
+    writeJSON(KEYS.learned, learned);
+  }
+}
+
+function queueUnsynced() {
+  if (!sheetEnabled()) return;
+  const testing = getTesting();
+  const box = readOutbox();
+  const keys = new Set(box.map(jobKey));
+  if (!testing.skipItems) {
+    for (const item of getPendingSheetRows().items) {
+      const job = { action: "addItem", store: item.store, name: item.name, ticketValue: item.ticketValue };
+      const key = jobKey(job);
+      if (keys.has(key)) continue;
+      box.push({ id: makeId(), ...job });
+      keys.add(key);
+    }
+  }
+  if (!testing.skipBarcodes) {
+    for (const row of getPendingSheetRows().barcodes) {
+      const job = {
+        action: "saveBarcode",
+        code: row.code,
+        store: row.store,
+        name: row.name,
+        notes: "New product",
+      };
+      const key = jobKey(job);
+      if (keys.has(key)) continue;
+      box.push({ id: makeId(), ...job });
+      keys.add(key);
+    }
+  }
+  writeOutbox(box);
+  if (box.length) schedulePump();
+}
+
+function applyCatalog(store, payload) {
+  const catalog = readCatalog();
+  catalog[store] = {
+    tab: payload.tab || "",
+    items: Array.isArray(payload.items) ? payload.items : [],
+    fetchedAt: Date.now(),
+  };
+  mem.catalog = catalog;
+  writeJSON(KEYS.catalog, catalog);
+}
+
+function applyBarcodes(rows) {
+  mem.barcodes = { rows, fetchedAt: Date.now() };
+  writeJSON(KEYS.barcodes, mem.barcodes);
+}
+
+export async function refreshStore(store) {
+  if (store !== "WPR" && store !== "CPR") return { ok: false, reason: "bad-store" };
+  if (!sheetEnabled()) return { ok: false, reason: "not-configured" };
+  try {
+    const data = await sheetRequest("getCatalog", { store });
+    applyCatalog(store, data);
+    if (Array.isArray(data.barcodes)) applyBarcodes(data.barcodes);
+    setSheetStatus({ error: "", message: "", tab: data.tab || "", okAt: Date.now() });
+    queueUnsynced();
+    await whenSheetIdle();
+    return { ok: true, tab: data.tab || "" };
+  } catch (err) {
+    setSheetStatus({ error: err.code || "offline", message: err.message || "Couldn't reach the sheet." });
+    return { ok: false, reason: err.code || "offline", message: err.message || "" };
+  }
+}
+
+export async function testConnection() {
+  const conn = getConnection();
+  if (!sheetEnabled()) return { ok: false, message: "Paste the web app link first." };
+  if (!conn.pin && !sheetClient) return { ok: false, message: "Enter the PIN." };
+  try {
+    await sheetRequest("ping", {});
+    setSheetStatus({ error: "", message: "Connected.", okAt: Date.now() });
+    return { ok: true, message: "Connected. Pick a store and this month's tab opens." };
+  } catch (err) {
+    setSheetStatus({ error: err.code || "offline", message: err.message || "Couldn't reach the sheet." });
+    return { ok: false, message: err.message || "Couldn't reach the sheet." };
+  }
+}
+
+function amountOf(applied) {
+  return {
+    pieces: Number(applied?.pieces) || 0,
+    ounces: Number(applied?.ounces) || 0,
+    quarters: Number(applied?.quarters) || 0,
+  };
 }
 
 export function expandUpcE(c) {
@@ -294,14 +709,17 @@ export function lookupBarcode(code, store, format) {
     result.source = "learned";
     return result;
   }
-  const real = REAL_BARCODES.find((row) => normalizeCode(row.code) === normalized);
+  const sheetRows = cachedBarcodeRows();
+  const table = sheetRows || REAL_BARCODES;
+  const real = table.find((row) => normalizeCode(row.code) === normalized);
   if (real) {
     const name = String(real[store] || "").trim();
     if (!name) return result;
-    result.item = resolveName(items, name, real.code);
+    result.item = resolveName(items, name, String(real.code));
     result.source = "barcode";
     return result;
   }
+  if (sheetRows) return result;
   const sample = items.find((item) => item.barcode && normalizeCode(item.barcode) === normalized);
   if (sample) {
     result.item = { ...sample };
@@ -317,10 +735,20 @@ export function saveBarcode(code, store, itemName, options = {}) {
   const normalized = normalizeCode(raw);
   const learned = readLearned();
   const row = { code: raw, name };
-  if (options.pending) row.pending = true;
+  const send = sheetEnabled() && !getTesting().skipBarcodes;
+  if (options.pending || !send) row.pending = true;
   learned[store + ":" + normalized] = row;
   writeJSON(KEYS.learned, learned);
-  return { code: raw, normalized, store, name, pending: !!options.pending };
+  if (send) {
+    enqueue({
+      action: "saveBarcode",
+      code: raw,
+      store,
+      name,
+      notes: options.notes || (options.pending ? "New product" : "Matched in the app"),
+    });
+  }
+  return { code: raw, normalized, store, name, pending: !!row.pending };
 }
 
 // Add a product that is not on the September list yet. It stays on this phone
@@ -345,6 +773,14 @@ export function addItem(store, { name, ticketValue } = {}) {
   const added = readAdded();
   added[store].push(item);
   writeJSON(KEYS.added, added);
+  if (sheetEnabled() && !getTesting().skipItems) {
+    enqueue({
+      action: "addItem",
+      store,
+      name: item.name,
+      ticketValue: item.tickets,
+    });
+  }
   return { ...item };
 }
 
@@ -388,7 +824,46 @@ function cleanEntry(e) {
   for (const key of ["count", "boxes", "loose", "perBox", "packWord", "lb", "oz", "q1", "q2"]) {
     if (e[key] !== undefined && e[key] !== null) out[key] = e[key];
   }
+  if (e.sheetApplied) out.sheetApplied = { ...e.sheetApplied };
+  if (e.sheetSync) out.sheetSync = e.sheetSync;
+  if (e.sheetError) out.sheetError = e.sheetError;
   return out;
+}
+
+function baselineFor(entry, replaceIds) {
+  const session = readSession();
+  if (entry.id != null) {
+    const existing = session.entries.find((item) => item.id === entry.id);
+    return amountOf(existing?.sheetApplied);
+  }
+  const drop = new Set(replaceIds || []);
+  return (session.entries || []).reduce((sum, item) => {
+    if (!drop.has(item.id)) return sum;
+    const applied = amountOf(item.sheetApplied);
+    return {
+      pieces: sum.pieces + applied.pieces,
+      ounces: sum.ounces + applied.ounces,
+      quarters: sum.quarters + applied.quarters,
+    };
+  }, { ...ZERO_AMOUNT });
+}
+
+function queueCount(stored, delta) {
+  const meaningful = delta.pieces || delta.ounces || delta.quarters;
+  if (!meaningful) {
+    stored.sheetSync = "saved";
+    return;
+  }
+  stored.sheetSync = "pending";
+  enqueue({
+    action: "applyCount",
+    store: stored.store,
+    item: stored.item,
+    section: stored.section,
+    kind: stored.kind,
+    entryId: stored.id,
+    delta,
+  });
 }
 
 export function getCounts() {
@@ -400,12 +875,14 @@ export function getCounts() {
 // an id is updated in place.
 export function saveCount(entry, replaceIds = []) {
   const session = readSession();
+  const baseline = baselineFor(entry, replaceIds);
   let savedId;
+  let stored;
   if (entry.id != null) {
     savedId = entry.id;
     session.entries = session.entries.map((existing) => {
       if (existing.id !== entry.id) return existing;
-      return cleanEntry({
+      stored = cleanEntry({
         ...entry,
         id: existing.id,
         store: existing.store,
@@ -415,13 +892,29 @@ export function saveCount(entry, replaceIds = []) {
         fullBin: existing.fullBin,
         perOz: existing.perOz,
       });
+      return stored;
     });
   } else {
     const drop = new Set(replaceIds || []);
-    const stored = cleanEntry({ ...entry, id: session.nextId++ });
+    stored = cleanEntry({ ...entry, id: session.nextId++ });
     savedId = stored.id;
     session.entries = session.entries.filter((existing) => !drop.has(existing.id));
     session.entries.unshift(stored);
+  }
+  if (!stored) {
+    writeJSON(KEYS.session, session);
+    return null;
+  }
+  const delta = countSheetDelta(stored, baseline);
+  const skip = !sheetEnabled() || getTesting().skipCounts;
+  if (skip) {
+    // Leave the sheet as it was. Counts made while testing stay on the phone
+    // until someone edits them after testing is turned off.
+    stored.sheetApplied = baseline;
+    stored.sheetSync = sheetEnabled() ? "skipped" : "local";
+  } else {
+    stored.sheetApplied = entryAmount(stored);
+    queueCount(stored, delta);
   }
   writeJSON(KEYS.session, session);
   return session.entries.find((existing) => existing.id === savedId) || null;
@@ -429,8 +922,28 @@ export function saveCount(entry, replaceIds = []) {
 
 export function removeCount(id) {
   const session = readSession();
+  const existing = session.entries.find((entry) => entry.id === id);
   session.entries = session.entries.filter((entry) => entry.id !== id);
   writeJSON(KEYS.session, session);
+  if (existing && sheetEnabled() && !getTesting().skipCounts) {
+    const applied = amountOf(existing.sheetApplied);
+    if (applied.pieces || applied.ounces || applied.quarters) {
+      enqueue({
+        action: "applyCount",
+        store: existing.store,
+        item: existing.item,
+        section: existing.section,
+        kind: existing.kind,
+        entryId: existing.id,
+        undo: true,
+        delta: {
+          pieces: -applied.pieces,
+          ounces: -applied.ounces,
+          quarters: -applied.quarters,
+        },
+      });
+    }
+  }
   return getCounts();
 }
 
@@ -470,11 +983,24 @@ export function resetLocalData() {
   mem.session = { nextId: 1, entries: [] };
   mem.packs = {};
   mem.added = { WPR: [], CPR: [] };
+  mem.catalog = {};
+  mem.barcodes = undefined;
+  mem.outbox = [];
   writeJSON(KEYS.learned, mem.learned);
   writeJSON(KEYS.session, mem.session);
   writeJSON(KEYS.packs, mem.packs);
   writeJSON(KEYS.added, mem.added);
   writeJSON(KEYS.prefs, {});
+  writeJSON(KEYS.catalog, {});
+  writeJSON(KEYS.outbox, []);
+  writeJSON(KEYS.testing, {});
+  writeJSON(KEYS.connection, {});
+  writeJSON(KEYS.status, {});
+  try {
+    globalThis.localStorage?.removeItem(KEYS.barcodes);
+  } catch {
+    // ignore
+  }
 }
 
 // Drop the in-memory cache so the next read comes from localStorage.
@@ -483,4 +1009,7 @@ export function reloadLocalData() {
   mem.session = null;
   mem.packs = null;
   mem.added = null;
+  mem.catalog = null;
+  mem.barcodes = undefined;
+  mem.outbox = null;
 }

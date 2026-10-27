@@ -9,19 +9,28 @@ import {
   formatPieces,
   formatTickets,
   getCounts,
+  getConnection,
   getItems,
   getPackSize,
   getPrefs,
+  getSheetStatus,
+  getTesting,
   lookupBarcode,
   parsePack,
   pieces,
   plural,
   removeCount,
   saveBarcode,
+  saveConnection,
   saveCount,
   savePackSize,
   savePrefs,
+  setTesting,
+  testConnection,
+  testingOn,
   totalOz,
+  refreshStore,
+  whenSheetIdle,
 } from "./data.js";
 import { cameraIsOn, setOnCode, startCamera, stopCamera } from "./scanner.js";
 
@@ -56,6 +65,12 @@ const state = {
   banner: null,
   dupDraft: null,
   confirmClear: false,
+  sheetNote: "",
+  scriptUrl: "",
+  scriptPin: "",
+  connMessage: "",
+  connBusy: false,
+  screenBeforeSettings: "store",
 };
 
 const BARS = [3, 1, 2, 1, 3, 2, 1, 1, 3, 1, 2, 3, 1, 2, 1, 3];
@@ -128,36 +143,76 @@ function render() {
   document.body.classList.toggle("modal-open", !!(state.dupDraft || state.confirmClear));
 }
 
+function statusNote() {
+  const flags = getTesting();
+  const held = [];
+  if (flags.skipCounts) held.push("counts");
+  if (flags.skipBarcodes) held.push("barcodes");
+  if (flags.skipItems) held.push("new items");
+  if (held.length) {
+    return {
+      testing: true,
+      text: "Testing mode is on. Not saving " + held.join(", ") + " to the Google Sheet.",
+    };
+  }
+  const conn = getConnection();
+  const status = getSheetStatus();
+  if (!conn.configured) {
+    return { testing: false, text: "Google Sheet isn't connected yet. Open the menu and choose Sheet connection." };
+  }
+  if (status.error) {
+    return { testing: false, text: status.message || "Couldn't reach the Google Sheet. Showing the copy saved on this phone." };
+  }
+  if (status.tab) return { testing: false, text: "Connected to " + status.tab + ". Counts are saved to the Google Sheet." };
+  return { testing: false, text: "The Google Sheet is connected. Pick a store and counts will be saved there." };
+}
+
 function shell() {
+  const note = statusNote();
   return `
-    <p class="note">Saved on this phone only. Counts are not in the Google Sheet yet.</p>
+    <p class="note${note.testing ? " testing" : ""}">${esc(note.text)}</p>
     ${header()}
     ${body()}
     ${dialog()}
   `;
 }
 
+function testingSwitch(flag, label, on) {
+  return `
+    <button class="switch" role="switch" aria-checked="${on ? "true" : "false"}" data-action="testing" data-flag="${flag}">
+      <span>${label}</span>
+      <span class="switch-ui" aria-hidden="true"></span>
+    </button>`;
+}
+
 function header() {
-  const badge = state.store
+  const place = state.store
     ? `<div class="badge">${esc(state.store)}${state.section ? " · " + esc(state.section) : ""}</div>`
     : "";
-  const menuBtn = state.store && state.section
-    ? `<button class="menu-btn" data-action="menu" aria-label="Menu" aria-expanded="${state.menuOpen ? "true" : "false"}">☰</button>`
-    : "";
+  const testingBadge = testingOn() ? `<div class="badge testing">Testing</div>` : "";
+  const flags = getTesting();
   const menu = state.menuOpen ? `
     <div class="menu" role="menu">
-      <button class="btn quiet" data-action="change-section">Change section</button>
-      <button class="btn quiet" data-action="change-store">Change store</button>
+      ${state.section ? `<button class="btn quiet" data-action="change-section">Change section</button>` : ""}
+      ${state.store ? `<button class="btn quiet" data-action="change-store">Change store</button>` : ""}
       ${state.entries.length ? `<button class="btn quiet danger" data-action="clear-session">Start a new session</button>` : ""}
+      <div class="menu-label">Testing mode</div>
+      ${testingSwitch("skipCounts", "Don't save counts", flags.skipCounts)}
+      ${testingSwitch("skipBarcodes", "Don't save barcodes", flags.skipBarcodes)}
+      ${testingSwitch("skipItems", "Don't save new items", flags.skipItems)}
+      <button class="btn quiet" data-action="sheet-settings">Sheet connection</button>
     </div>` : "";
   return `
     <header class="header">
-      <div class="brand">Fun Zone Inventory</div>
-      <div class="header-side">
-        ${badge}
-        ${menuBtn}
-        ${menu}
+      <div class="header-top">
+        <div class="brand">Fun Zone Inventory</div>
+        <div class="header-side">
+          ${testingBadge}
+          <button class="menu-btn" data-action="menu" aria-label="Menu" aria-expanded="${state.menuOpen ? "true" : "false"}">☰</button>
+          ${menu}
+        </div>
       </div>
+      ${place}
     </header>`;
 }
 
@@ -181,8 +236,26 @@ function body() {
     case "bin2": return binScreen();
     case "bin2ask": return binAskScreen();
     case "saved": return savedScreen();
+    case "settings": return settingsScreen();
     default: return storeScreen();
   }
+}
+
+function settingsScreen() {
+  return `
+    ${backButton("Back")}
+    <h1>Sheet connection</h1>
+    <p class="sub">Paste the web app link and the PIN from the setup steps. They stay on this phone. Nothing here is put in the public website.</p>
+    <label class="field-label" for="scriptUrl">Web app link</label>
+    <input id="scriptUrl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(state.scriptUrl)}">
+    <label class="field-label" for="scriptPin">PIN</label>
+    <input id="scriptPin" type="password" autocomplete="off" placeholder="The PIN Cassidy chose" value="${esc(state.scriptPin)}">
+    <div class="stack" style="margin-top:16px">
+      <button class="btn primary" data-action="save-connection">Save on this phone</button>
+      <button class="btn" data-action="test-connection" ${state.connBusy ? "disabled" : ""}>Test connection</button>
+    </div>
+    ${state.connMessage ? `<p class="small" style="margin-top:12px">${esc(state.connMessage)}</p>` : ""}
+    <p class="small" style="margin-top:16px">Testing the connection does not change the spreadsheet. The month tab is created the first time someone picks a store.</p>`;
 }
 
 function storeScreen() {
@@ -322,7 +395,7 @@ function itemBanner() {
     ? `<div class="small warn" style="margin-top:8px">This name isn't on the Sept 2026 list, so tickets and bin size aren't set yet.</div>`
     : "";
   const pending = state.item.pending
-    ? `<div class="small" style="margin-top:8px">New product, saved on this phone. It will be added to the sheet later.</div>`
+    ? `<div class="small" style="margin-top:8px">New product, saved on this phone. ${getTesting().skipItems ? "Not sent to the sheet (testing)." : "It will be added to the sheet."}</div>`
     : "";
   return `
     <div class="card banner">
@@ -469,6 +542,7 @@ function savedScreen() {
       <div class="check" aria-hidden="true">✓</div>
       <h1 class="center">${headline}</h1>
       ${detail}
+      ${state.sheetNote ? `<p class="small" style="margin-top:8px">${esc(state.sheetNote)}</p>` : ""}
     </div>
     <div class="actions">
       <button class="btn primary" data-action="scan-next">Scan next</button>
@@ -590,6 +664,18 @@ function clearDialog() {
     </div>`;
 }
 
+function sheetNoteFor(entry) {
+  if (!entry) return "";
+  if (entry.sheetSync === "skipped") return "Saved here. Not sent to the sheet (testing).";
+  if (entry.sheetSync === "local") return "Saved on this phone. The Google Sheet isn't connected yet.";
+  if (entry.sheetSync === "pending") return "Saving to the sheet…";
+  if (entry.sheetSync === "saved") return "Saved to the sheet.";
+  if (entry.sheetSync === "partial") return entry.sheetError || "Part of this count could not be written.";
+  if (entry.sheetSync === "queued") return "Saved on this phone. The sheet didn't take it yet. I'll try again.";
+  if (entry.sheetSync === "error") return entry.sheetError || "The sheet didn't take that count.";
+  return "";
+}
+
 function rememberPlace() {
   savePrefs(state.store, state.section);
 }
@@ -601,6 +687,10 @@ function chooseStore(id) {
   state.screen = "section";
   rememberPlace();
   render();
+  refreshStore(id).then(() => {
+    if (state.store !== id || state.screen === "settings" || cameraIsOn()) return;
+    render();
+  });
 }
 
 function chooseSection(section) {
@@ -723,9 +813,18 @@ function commit(partial, replaceIds) {
   state.editingId = null;
   state.dupDraft = null;
   state.banner = "saved";
+  state.sheetNote = sheetNoteFor(saved);
   resetEntry();
   state.screen = "saved";
   render();
+  const savedId = state.lastSaved;
+  whenSheetIdle().then(() => {
+    state.entries = getCounts();
+    const fresh = state.entries.find((entry) => entry.id === savedId);
+    if (fresh) state.sheetNote = sheetNoteFor(fresh);
+    else if (getSheetStatus().error) state.sheetNote = getSheetStatus().message;
+    if (state.screen === "saved" && state.lastSaved === savedId) render();
+  });
 }
 
 function saveCountScreen() {
@@ -794,6 +893,7 @@ function backTarget() {
     return state.editingId != null ? state.returnScreen || "saved" : "kind";
   }
   if (state.screen === "section") return state.section ? "scan" : "store";
+  if (state.screen === "settings") return state.screenBeforeSettings || "store";
   return "scan";
 }
 
@@ -879,6 +979,36 @@ function onClick(event) {
       state.screen = "store";
       rememberPlace();
       render();
+      break;
+    case "testing": {
+      const flag = button.dataset.flag;
+      const current = getTesting();
+      setTesting({ [flag]: !current[flag] });
+      state.menuOpen = true;
+      render();
+      break;
+    }
+    case "sheet-settings": {
+      const conn = getConnection();
+      state.scriptUrl = conn.url;
+      state.scriptPin = conn.pin;
+      state.connMessage = "";
+      state.connBusy = false;
+      state.screenBeforeSettings = state.screen === "settings" ? state.screenBeforeSettings : state.screen;
+      state.menuOpen = false;
+      state.screen = "settings";
+      render();
+      break;
+    }
+    case "save-connection":
+      saveConnection({ url: state.scriptUrl, pin: state.scriptPin });
+      state.connMessage = state.scriptUrl.trim()
+        ? "Saved on this phone."
+        : "Cleared. This phone is not connected.";
+      render();
+      break;
+    case "test-connection":
+      saveAndTest();
       break;
     case "clear-session":
       state.menuOpen = false;
@@ -1033,6 +1163,14 @@ function onInput(event) {
     if (next) next.disabled = !state.newName.trim();
     return;
   }
+  if (event.target.id === "scriptUrl") {
+    state.scriptUrl = event.target.value;
+    return;
+  }
+  if (event.target.id === "scriptPin") {
+    state.scriptPin = event.target.value;
+    return;
+  }
   if (event.target.id === "search") {
     state.search = event.target.value;
     const list = document.getElementById("pickList");
@@ -1061,6 +1199,17 @@ function onKey(event) {
   }
 }
 
+async function saveAndTest() {
+  saveConnection({ url: state.scriptUrl, pin: state.scriptPin });
+  state.connBusy = true;
+  state.connMessage = "Checking…";
+  render();
+  const result = await testConnection();
+  state.connBusy = false;
+  state.connMessage = result.message;
+  if (state.screen === "settings") render();
+}
+
 function boot() {
   const prefs = getPrefs();
   state.entries = getCounts();
@@ -1074,6 +1223,12 @@ function boot() {
   document.addEventListener("input", onInput);
   document.addEventListener("keydown", onKey);
   render();
+  if (state.store) {
+    refreshStore(state.store).then(() => {
+      if (state.screen === "settings" || cameraIsOn()) return;
+      render();
+    });
+  }
 }
 
 boot();

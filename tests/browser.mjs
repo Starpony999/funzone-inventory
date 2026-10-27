@@ -310,6 +310,23 @@ try {
   const remembered = await page.$$eval(".field .num", (els) => els.map((el) => el.textContent.trim()));
   assert.equal(remembered[0], "6");
 
+  await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  await click(page, '[data-action="menu"]');
+  await see(page, "TESTING MODE");
+  await see(page, "Don't save counts");
+  await see(page, "Don't save barcodes");
+  await see(page, "Don't save new items");
+  await click(page, '[data-action="testing"][data-flag="skipCounts"]');
+  await see(page, "Not saving counts");
+  assert.equal(await page.$eval(".badge.testing", (el) => el.textContent.trim()), "Testing");
+  await page.screenshot({ path: `${outDir}/18-testing-menu.png` });
+  await click(page, '[data-action="sheet-settings"]');
+  await see(page, "Sheet connection");
+  await see(page, "Web app link");
+  await see(page, "PIN");
+  await page.screenshot({ path: `${outDir}/19-sheet-settings.png` });
+  await click(page, '[data-action="back"]');
+
   const zxingPage = await browser.newPage();
   zxingPage.on("pageerror", (err) => errors.push("zxing: " + String(err)));
   await zxingPage.evaluateOnNewDocument(() => {

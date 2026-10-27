@@ -6,9 +6,11 @@ import {
   clearSession,
   describeEntry,
   expandUpcE,
+  addItem,
   getCounts,
   getItems,
   getPackSize,
+  getPendingSheetRows,
   lookupBarcode,
   normalizeCode,
   parsePack,
@@ -31,8 +33,8 @@ globalThis.localStorage = {
 
 describe("catalog and barcodes", { concurrency: false }, () => {
   test("each store has the 25 September items", () => {
-    assert.equal(getItems("WPR").length, 25);
-    assert.equal(getItems("CPR").length, 25);
+    assert.equal(getItems("WPR").filter((item) => !item.pending).length, 25);
+    assert.equal(getItems("CPR").filter((item) => !item.pending).length, 25);
     assert.equal(getItems("nope").length, 0);
   });
 
@@ -206,6 +208,63 @@ describe("local session", { concurrency: false }, () => {
 
     removeCount(edited.id);
     assert.equal(getCounts().length, 0);
+  });
+
+  test("a new product is pending, linked to its barcode, and only on that store", () => {
+    resetLocalData();
+    assert.equal(addItem("CPR", { name: "  ", ticketValue: 10 }), null);
+    assert.equal(addItem("CPR", { name: "Squeeze Pyramid", ticketValue: 1.5 }), null);
+    assert.equal(addItem("CPR", { name: "Squeeze Pyramid", ticketValue: -1 }), null);
+    assert.equal(addItem("nope", { name: "Squeeze Pyramid", ticketValue: 40 }), null);
+    const created = addItem("CPR", { name: " Squeeze Pyramid ", ticketValue: "40" });
+    assert.equal(created.name, "Squeeze Pyramid");
+    assert.equal(created.tickets, 40);
+    assert.equal(created.pending, true);
+    assert.equal(created.fullBin, null);
+    assert.equal(addItem("CPR", { name: "squeeze pyramid", ticketValue: 40 }), null);
+    assert.equal(addItem("CPR", { name: "Dum Dum Pops", ticketValue: 20 }), null);
+    assert.equal(getItems("CPR").some((item) => item.name === "Squeeze Pyramid"), true);
+    assert.equal(getItems("WPR").some((item) => item.name === "Squeeze Pyramid"), false);
+
+    const linked = saveBarcode("097138502094", "CPR", "Squeeze Pyramid", { pending: true });
+    assert.equal(linked.code, "097138502094");
+    assert.equal(linked.pending, true);
+    reloadLocalData();
+    const again = lookupBarcode("097138502094", "CPR");
+    assert.equal(again.source, "learned");
+    assert.equal(again.item.name, "Squeeze Pyramid");
+    assert.equal(again.item.tickets, 40);
+    assert.equal(again.item.pending, true);
+    assert.equal(lookupBarcode("097138502094", "WPR").item, null);
+
+    const pending = getPendingSheetRows();
+    assert.deepEqual(pending.items, [{
+      store: "CPR",
+      name: "Squeeze Pyramid",
+      ticketValue: 40,
+      columnA: "Squeeze Pyramid",
+      columnB: 40,
+    }]);
+    assert.deepEqual(pending.barcodes, [{
+      store: "CPR",
+      code: "097138502094",
+      name: "Squeeze Pyramid",
+    }]);
+
+    saveCount({
+      store: "CPR",
+      section: "Front",
+      item: "Squeeze Pyramid",
+      tickets: 40,
+      kind: "count",
+      count: 2,
+      loose: 2,
+    });
+    clearSession();
+    reloadLocalData();
+    assert.equal(getCounts().length, 0);
+    assert.equal(lookupBarcode("097138502094", "CPR").item.tickets, 40);
+    assert.equal(getPendingSheetRows().items.length, 1);
   });
 
   test("clearing the session keeps learned barcodes and custom box sizes", () => {

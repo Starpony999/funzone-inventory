@@ -306,6 +306,7 @@ input[type="text"], input[type="search"] {
 
 .pick-list { max-height: 420px; overflow-y: auto; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .pick-list .btn { min-height: 56px; font-size: 16px; font-weight: 550; }
+.pick-list .btn.primary { min-height: 64px; font-size: 19px; font-weight: 650; justify-content: center; }
 
 .fields { display: flex; gap: 10px; flex-wrap: wrap; }
 .field {

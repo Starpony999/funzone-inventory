@@ -2,6 +2,7 @@ import {
   BIN_WORDS,
   SECTIONS,
   STORES,
+  addItem,
   clearSession,
   describeEntry,
   formatNumber,
@@ -34,6 +35,9 @@ const state = {
   typed: "",
   pendingCode: "",
   search: "",
+  newName: "",
+  nameError: "",
+  ticketInput: "",
   item: null,
   justMatched: false,
   boxes: "",
@@ -167,6 +171,9 @@ function body() {
     case "section": return sectionScreen();
     case "scan": return scanScreen();
     case "pick": return pickScreen();
+    case "new-name": return newNameScreen();
+    case "new-confirm": return newConfirmScreen();
+    case "new-tickets": return newTicketsScreen();
     case "kind": return kindScreen();
     case "count": return countScreen();
     case "weight": return weightScreen();
@@ -234,17 +241,68 @@ function scanScreen() {
     ${sessionList()}`;
 }
 
+function pickEmpty(items) {
+  if (items.length > 0 || !state.search.trim()) return "";
+  return `
+    <div class="muted" style="padding:8px 4px 4px">No match. Try fewer letters, or add it as a new product.</div>
+    <button class="btn primary" data-action="add-new">Add as a new product</button>`;
+}
+
 function pickScreen() {
   const items = filteredItems();
-  const empty = items.length === 0 && state.search.trim()
-    ? `<div class="muted" style="padding:8px">No match. Try fewer letters.</div>`
-    : "";
   return `
     ${backButton("Cancel")}
     <h1>Which item is this?</h1>
     <p class="sub">New barcode ${esc(state.pendingCode)}. Pick it once and we'll remember it.</p>
     <input id="search" type="search" placeholder="Search items" value="${esc(state.search)}" autocomplete="off">
-    <div class="pick-list" id="pickList">${pickButtons(items)}${empty}</div>`;
+    <div class="pick-list" id="pickList">${pickButtons(items)}${pickEmpty(items)}</div>`;
+}
+
+function newNameScreen() {
+  const ready = state.newName.trim().length > 0;
+  const duplicate = state.nameError
+    ? `
+      <div id="nameWarn">
+        <div class="block-warn">This store already has “${esc(state.nameError)}”. Pick it from the list, or use a different name.</div>
+        <button class="btn" data-action="choose" data-name="${esc(state.nameError)}" style="margin-top:12px"><span>Use ${esc(state.nameError)}</span></button>
+      </div>`
+    : "";
+  return `
+    ${backButton("Back")}
+    <h1>What's the product called?</h1>
+    <p class="sub">Barcode ${esc(state.pendingCode)} isn't on the ${esc(storeName(state.store))} list yet.</p>
+    <input id="newName" type="text" autocomplete="off" autocapitalize="words" placeholder="Product name" value="${esc(state.newName)}">
+    <div class="stack" style="margin-top:12px">
+      ${duplicate}
+      <button class="btn primary" data-action="new-name-continue" ${ready ? "" : "disabled"}>Continue</button>
+    </div>`;
+}
+
+function newConfirmScreen() {
+  return `
+    ${backButton("Go back")}
+    <h1>Add this product?</h1>
+    <p class="sub">Check the name and the barcode before it is saved on this phone.</p>
+    <div class="card banner">
+      <div class="item-name">${esc(state.newName.trim())}</div>
+      <div class="muted" style="margin-top:8px">Barcode ${esc(state.pendingCode)}</div>
+      <div class="small" style="margin-top:6px">${esc(storeName(state.store))} · ${esc(state.store)}</div>
+    </div>
+    <div class="stack">
+      <button class="btn primary" data-action="new-confirm">Confirm</button>
+      <button class="btn" data-action="back"><span>Go back</span></button>
+    </div>`;
+}
+
+function newTicketsScreen() {
+  const ready = state.ticketInput !== "";
+  return `
+    ${backButton("Back")}
+    <h1>Ticket price</h1>
+    <p class="sub">How many tickets is ${esc(state.newName.trim())}? Enter a whole number.</p>
+    <div class="figure">${esc(state.ticketInput || "0")}</div>
+    ${numPad(false)}
+    <button class="btn primary save" data-action="save-new-item" ${ready ? "" : "disabled"}>Continue</button>`;
 }
 
 function pickButtons(items) {
@@ -258,16 +316,20 @@ function pickButtons(items) {
 function itemBanner() {
   if (!state.item) return "";
   const remembered = state.justMatched
-    ? `<div class="ok">Barcode ${esc(state.pendingCode)} matched. It will be recognized next time.</div>`
+    ? `<div class="ok">Barcode ${esc(state.pendingCode)} ${state.item.pending ? "saved for this product" : "matched"}. It will be recognized next time.</div>`
     : "";
   const offList = state.item.offList
     ? `<div class="small warn" style="margin-top:8px">This name isn't on the Sept 2026 list, so tickets and bin size aren't set yet.</div>`
+    : "";
+  const pending = state.item.pending
+    ? `<div class="small" style="margin-top:8px">New product, saved on this phone. It will be added to the sheet later.</div>`
     : "";
   return `
     <div class="card banner">
       <div class="item-name">${esc(state.item.name)}</div>
       <div class="muted" style="margin-top:4px">${esc(formatTickets(state.item.tickets))}</div>
       ${remembered}
+      ${pending}
       ${offList}
     </div>`;
 }
@@ -574,7 +636,48 @@ function handleCode(raw, format) {
 function chooseItem(name) {
   const item = getItems(state.store).find((candidate) => candidate.name === name);
   if (!item) return;
-  saveBarcode(state.pendingCode, state.store, item.name);
+  saveBarcode(state.pendingCode, state.store, item.name, { pending: !!item.pending });
+  state.item = item;
+  state.justMatched = true;
+  state.nameError = "";
+  state.screen = "kind";
+  render();
+}
+
+function startNewProduct() {
+  state.newName = state.search.trim();
+  state.nameError = "";
+  state.ticketInput = "";
+  state.screen = "new-name";
+  render();
+}
+
+function continueNewName() {
+  const name = state.newName.trim();
+  if (!name) return;
+  const existing = getItems(state.store).find((item) => item.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    state.nameError = existing.name;
+    render();
+    return;
+  }
+  state.newName = name;
+  state.nameError = "";
+  state.screen = "new-confirm";
+  render();
+}
+
+function saveNewProduct() {
+  if (state.ticketInput === "") return;
+  const tickets = Number(state.ticketInput);
+  const item = addItem(state.store, { name: state.newName.trim(), ticketValue: tickets });
+  if (!item) {
+    state.nameError = state.newName.trim();
+    state.screen = "new-name";
+    render();
+    return;
+  }
+  saveBarcode(state.pendingCode, state.store, item.name, { pending: true });
   state.item = item;
   state.justMatched = true;
   state.screen = "kind";
@@ -648,7 +751,10 @@ function padPress(key) {
   const allowDot = state.screen === "weight" && state.weightField === "oz";
   let value = "";
   let set = () => {};
-  if (state.screen === "weight") {
+  if (state.screen === "new-tickets") {
+    value = state.ticketInput;
+    set = (next) => { state.ticketInput = next; };
+  } else if (state.screen === "weight") {
     if (state.weightField === "lb") {
       value = state.lb;
       set = (next) => { state.lb = next; };
@@ -678,6 +784,9 @@ function padPress(key) {
 }
 
 function backTarget() {
+  if (state.screen === "new-name") return "pick";
+  if (state.screen === "new-confirm") return "new-name";
+  if (state.screen === "new-tickets") return "new-confirm";
   if (state.screen === "pick" || state.screen === "kind") return "scan";
   if (state.screen === "bin2") return "bin2ask";
   if (state.screen === "bin2ask") return "bin";
@@ -804,6 +913,20 @@ function onClick(event) {
     case "choose":
       chooseItem(button.dataset.name);
       break;
+    case "add-new":
+      startNewProduct();
+      break;
+    case "new-name-continue":
+      continueNewName();
+      break;
+    case "new-confirm":
+      state.ticketInput = "";
+      state.screen = "new-tickets";
+      render();
+      break;
+    case "save-new-item":
+      saveNewProduct();
+      break;
     case "kind-count":
       startCount();
       break;
@@ -900,15 +1023,22 @@ function onClick(event) {
 
 function onInput(event) {
   if (event.target.id === "typed") state.typed = event.target.value;
+  if (event.target.id === "newName") {
+    state.newName = event.target.value;
+    if (state.nameError) {
+      state.nameError = "";
+      document.getElementById("nameWarn")?.remove();
+    }
+    const next = document.querySelector('[data-action="new-name-continue"]');
+    if (next) next.disabled = !state.newName.trim();
+    return;
+  }
   if (event.target.id === "search") {
     state.search = event.target.value;
     const list = document.getElementById("pickList");
     if (!list) return;
     const items = filteredItems();
-    const empty = items.length === 0 && state.search.trim()
-      ? `<div class="muted" style="padding:8px">No match. Try fewer letters.</div>`
-      : "";
-    list.innerHTML = pickButtons(items) + empty;
+    list.innerHTML = pickButtons(items) + pickEmpty(items);
   }
 }
 
@@ -918,8 +1048,13 @@ function onKey(event) {
     handleCode(state.typed, null);
     return;
   }
+  if (event.key === "Enter" && event.target.id === "newName") {
+    event.preventDefault();
+    continueNewName();
+    return;
+  }
   if (event.target.matches("input, textarea")) return;
-  if (state.screen !== "count" && state.screen !== "weight") return;
+  if (state.screen !== "count" && state.screen !== "weight" && state.screen !== "new-tickets") return;
   if (/^\d$/.test(event.key) || event.key === "Backspace" || event.key === ".") {
     event.preventDefault();
     padPress(event.key === "Backspace" ? "del" : event.key);

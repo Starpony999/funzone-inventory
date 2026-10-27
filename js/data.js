@@ -9,7 +9,12 @@
  * v1 keeps:
  * - the two store catalogs and the six real barcodes in this file
  * - barcodes a phone has learned, in localStorage
+ * - products added on the phone, in localStorage, marked pending
  * - the current counting session, in localStorage
+ *
+ * A pending item still needs a row on that store's month tab (column A item
+ * name, column B ticket value) and each pending barcode needs a row on the
+ * FunZone Barcodes sheet. getPendingSheetRows() is the list to write.
  *
  * Barcode strings keep their leading zeros. They are never turned into numbers.
  */
@@ -108,9 +113,10 @@ const KEYS = {
   session: "fz-session",
   packs: "fz-pack-sizes",
   prefs: "fz-prefs",
+  added: "fz-added-items",
 };
 
-const mem = { learned: null, session: null, packs: null };
+const mem = { learned: null, session: null, packs: null, added: null };
 
 function readJSON(key, fallback) {
   try {
@@ -149,6 +155,23 @@ function readSession() {
 function readPacks() {
   if (mem.packs == null) mem.packs = readJSON(KEYS.packs, {});
   return mem.packs;
+}
+
+function readAdded() {
+  if (mem.added == null) {
+    const saved = readJSON(KEYS.added, {});
+    mem.added = {
+      WPR: Array.isArray(saved.WPR) ? saved.WPR : [],
+      CPR: Array.isArray(saved.CPR) ? saved.CPR : [],
+    };
+  }
+  return mem.added;
+}
+
+function storeItems(store) {
+  const catalog = ITEMS[store] || [];
+  const added = readAdded()[store] || [];
+  return [...catalog, ...added];
 }
 
 export function expandUpcE(c) {
@@ -255,9 +278,8 @@ function resolveName(items, name, code) {
 }
 
 export function getItems(store) {
-  const list = ITEMS[store];
-  if (!list) return [];
-  return list.map((item) => ({ ...item }));
+  if (store !== "WPR" && store !== "CPR") return [];
+  return storeItems(store).map((item) => ({ ...item }));
 }
 
 export function lookupBarcode(code, store, format) {
@@ -265,7 +287,7 @@ export function lookupBarcode(code, store, format) {
   const normalized = raw ? normalizeCode(raw, format) : "";
   const result = { raw, normalized, item: null, source: null };
   if (!raw || (store !== "WPR" && store !== "CPR")) return result;
-  const items = ITEMS[store];
+  const items = storeItems(store);
   const learned = readLearned()[store + ":" + normalized];
   if (learned && learned.name) {
     result.item = resolveName(items, learned.name, learned.code || raw);
@@ -288,15 +310,68 @@ export function lookupBarcode(code, store, format) {
   return result;
 }
 
-export function saveBarcode(code, store, itemName) {
+export function saveBarcode(code, store, itemName, options = {}) {
   const name = String(itemName || "").trim();
   const raw = String(code ?? "").replace(/[\s-]/g, "");
   if (!raw || !name || (store !== "WPR" && store !== "CPR")) return null;
   const normalized = normalizeCode(raw);
   const learned = readLearned();
-  learned[store + ":" + normalized] = { code: raw, name };
+  const row = { code: raw, name };
+  if (options.pending) row.pending = true;
+  learned[store + ":" + normalized] = row;
   writeJSON(KEYS.learned, learned);
-  return { code: raw, normalized, store, name };
+  return { code: raw, normalized, store, name, pending: !!options.pending };
+}
+
+// Add a product that is not on the September list yet. It stays on this phone
+// and is marked pending so the Sheets step can append it to that store's
+// month tab (column A item, column B ticket value). Link the barcode with
+// saveBarcode(..., { pending: true }) so the FunZone Barcodes sheet gets a row too.
+export function addItem(store, { name, ticketValue } = {}) {
+  const trimmed = String(name || "").trim();
+  const tickets = typeof ticketValue === "number" ? ticketValue : Number(ticketValue);
+  if (!trimmed || (store !== "WPR" && store !== "CPR")) return null;
+  if (!Number.isSafeInteger(tickets) || tickets < 0) return null;
+  const existing = storeItems(store).find((item) => item.name.toLowerCase() === trimmed.toLowerCase());
+  if (existing) return null;
+  const item = {
+    name: trimmed,
+    tickets,
+    fullBin: null,
+    perOz: null,
+    barcode: null,
+    pending: true,
+  };
+  const added = readAdded();
+  added[store].push(item);
+  writeJSON(KEYS.added, added);
+  return { ...item };
+}
+
+// Rows still waiting for Google Sheets. Items go on the store's month tab.
+// Barcodes go on the FunZone Barcodes sheet.
+export function getPendingSheetRows() {
+  const items = [];
+  const added = readAdded();
+  for (const store of ["WPR", "CPR"]) {
+    for (const item of added[store]) {
+      if (!item.pending) continue;
+      items.push({
+        store,
+        name: item.name,
+        ticketValue: item.tickets,
+        columnA: item.name,
+        columnB: item.tickets,
+      });
+    }
+  }
+  const barcodes = [];
+  for (const [key, row] of Object.entries(readLearned())) {
+    if (!row || !row.pending) continue;
+    const store = key.slice(0, key.indexOf(":"));
+    barcodes.push({ store, code: row.code, name: row.name });
+  }
+  return { items, barcodes };
 }
 
 function cleanEntry(e) {
@@ -394,9 +469,11 @@ export function resetLocalData() {
   mem.learned = {};
   mem.session = { nextId: 1, entries: [] };
   mem.packs = {};
+  mem.added = { WPR: [], CPR: [] };
   writeJSON(KEYS.learned, mem.learned);
   writeJSON(KEYS.session, mem.session);
   writeJSON(KEYS.packs, mem.packs);
+  writeJSON(KEYS.added, mem.added);
   writeJSON(KEYS.prefs, {});
 }
 
@@ -405,4 +482,5 @@ export function reloadLocalData() {
   mem.learned = null;
   mem.session = null;
   mem.packs = null;
+  mem.added = null;
 }

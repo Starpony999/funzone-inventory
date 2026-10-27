@@ -24,6 +24,7 @@ import {
   saveConnection,
   saveCount,
   savePackSize,
+  savePiecesPer10,
   savePrefs,
   setTesting,
   testConnection,
@@ -47,6 +48,7 @@ const state = {
   newName: "",
   nameError: "",
   ticketInput: "",
+  per10: "",
   item: null,
   justMatched: false,
   boxes: "",
@@ -230,6 +232,7 @@ function body() {
     case "new-confirm": return newConfirmScreen();
     case "new-tickets": return newTicketsScreen();
     case "kind": return kindScreen();
+    case "per10": return per10Screen();
     case "count": return countScreen();
     case "weight": return weightScreen();
     case "bin":
@@ -376,6 +379,22 @@ function newTicketsScreen() {
     <div class="figure">${esc(state.ticketInput || "0")}</div>
     ${numPad(false)}
     <button class="btn primary save" data-action="save-new-item" ${ready ? "" : "disabled"}>Continue</button>`;
+}
+
+function per10Screen() {
+  const ready = Number(state.per10) > 0;
+  const held = getTesting().skipItems
+    ? `<p class="small">Testing mode: this is used for the count, and it is not written to the sheet.</p>`
+    : `<p class="small">This is saved on the item so it is not asked again.</p>`;
+  return `
+    ${backButton("Cancel")}
+    ${itemBanner()}
+    <h1>How many pieces equal 10 oz?</h1>
+    <p class="sub">Count 10 ounces of ${esc(state.item ? state.item.name : "this item")}, then enter how many pieces that is.</p>
+    <div class="figure">${esc(state.per10 || "0")}</div>
+    ${numPad(false)}
+    ${held}
+    <button class="btn primary save" data-action="save-per10" ${ready ? "" : "disabled"}>Continue</button>`;
 }
 
 function pickButtons(items) {
@@ -774,6 +793,19 @@ function saveNewProduct() {
   render();
 }
 
+function savePer10() {
+  const pieces = Number(state.per10);
+  if (!Number.isSafeInteger(pieces) || pieces <= 0 || !state.item || !state.store) return;
+  const perOz = savePiecesPer10(state.store, state.item.name, pieces);
+  if (perOz == null) return;
+  state.item = { ...state.item, perOz };
+  state.lb = "";
+  state.oz = "";
+  state.weightField = "lb";
+  state.screen = "weight";
+  render();
+}
+
 function startCount() {
   resetEntry();
   const named = namedPack();
@@ -853,6 +885,9 @@ function padPress(key) {
   if (state.screen === "new-tickets") {
     value = state.ticketInput;
     set = (next) => { state.ticketInput = next; };
+  } else if (state.screen === "per10") {
+    value = state.per10;
+    set = (next) => { state.per10 = next; };
   } else if (state.screen === "weight") {
     if (state.weightField === "lb") {
       value = state.lb;
@@ -886,6 +921,7 @@ function backTarget() {
   if (state.screen === "new-name") return "pick";
   if (state.screen === "new-confirm") return "new-name";
   if (state.screen === "new-tickets") return "new-confirm";
+  if (state.screen === "per10") return "kind";
   if (state.screen === "pick" || state.screen === "kind") return "scan";
   if (state.screen === "bin2") return "bin2ask";
   if (state.screen === "bin2ask") return "bin";
@@ -936,6 +972,7 @@ function startEdit(id) {
     state.countField = named || entry.perBox ? "boxes" : "loose";
     state.screen = "count";
   } else if (entry.kind === "weight") {
+    if (entry.perOz && !state.item.perOz) state.item = { ...state.item, perOz: entry.perOz };
     state.lb = String(entry.lb ?? "");
     state.oz = String(entry.oz ?? "");
     state.screen = "weight";
@@ -1061,11 +1098,19 @@ function onClick(event) {
       startCount();
       break;
     case "kind-weight":
-      state.lb = "";
-      state.oz = "";
-      state.weightField = "lb";
-      state.screen = "weight";
+      if (!state.item || !state.item.perOz) {
+        state.per10 = "";
+        state.screen = "per10";
+      } else {
+        state.lb = "";
+        state.oz = "";
+        state.weightField = "lb";
+        state.screen = "weight";
+      }
       render();
+      break;
+    case "save-per10":
+      savePer10();
       break;
     case "kind-bin":
       state.screen = "bin";
@@ -1192,7 +1237,7 @@ function onKey(event) {
     return;
   }
   if (event.target.matches("input, textarea")) return;
-  if (state.screen !== "count" && state.screen !== "weight" && state.screen !== "new-tickets") return;
+  if (state.screen !== "count" && state.screen !== "weight" && state.screen !== "new-tickets" && state.screen !== "per10") return;
   if (/^\d$/.test(event.key) || event.key === "Backspace" || event.key === ".") {
     event.preventDefault();
     padPress(event.key === "Backspace" ? "del" : event.key);

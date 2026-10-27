@@ -77,6 +77,22 @@ You can instead paste the web app URL into `js/config.js` and publish the site a
 
 Each switch is separate. You can block new products and still save counts.
 
+## Update the script before staff weigh a new item
+
+The app now asks "How many pieces equal 10 oz?" when an item has no pieces-per-ounce, then writes that into column D. The script on Google has to be the new one or column D stays blank.
+
+1. Open **FunZone Inventory 2026**.
+2. Click **Extensions**, then **Apps Script**.
+3. Click into `Code.gs`, select all, and delete it.
+4. On GitHub, open `apps-script/Code.gs`, click **Raw**, and copy the whole file.
+5. Paste it into the script editor and click the save icon.
+6. Click **Deploy**, then **Manage deployments**.
+7. Click the pencil on the web app.
+8. Set Version to **New version**.
+9. Click **Deploy**.
+
+The web app link and the PIN stay the same. Phones do not need a new link. Do this before anyone weighs an item that is missing pieces per ounce. Until you do, the phone can still count, but column D will not update.
+
 ## When you change the script later
 
 1. Apps Script → **Deploy** → **Manage deployments**.
@@ -103,6 +119,7 @@ This is the behavior to confirm. The app never types over a cell that already co
 
 - **Pieces** are added to the section column. Front is column J, Back is column K, Break Room is column L. A second count of the same item adds to the number already there. Column I ("How many in front") is not used. On the 2026 sheets, front counts are already in J, and the total formula still includes whatever is in I.
 - **Weight** always goes in columns F and G (pounds and ounces), even if you weighed some in Front and some in Back. The sheet only has one weight pair per product. The app adds the ounces together, then splits them back into pounds and ounces. It does not also put those pieces in J, K, or L, because column H already turns the weight into pieces and that would count them twice.
+- **Pieces per ounce** (column D): if it is blank, the phone asks how many pieces equal 10 ounces, divides by 10, and uses that for the count. On the sheet, if at least half of the filled D cells on that tab are formulas, it writes `=that number/10`. If most of them are plain numbers, it writes the result of the division. It does not replace a D cell that already has a formula. With **Don't save new items** turned on, the phone still uses the number for this count and does not write column D.
 - **Bins** go in column U as quarters. Quarter is 1, Half is 2, 3-Quarters is 3, Full is 4. At Cottleville the second bin is added on, which matches the sheet: two full bins is 8, and a full bin plus a 3-quarter bin is 7. Column M recalculates the piece estimate. Wentzville only asks about one bin.
 - **Yes, add it** adds that count on the sheet. **Replace the earlier one** only fixes counts from this same session on this phone: the sheet changes by the difference. Counts from an earlier day, or from another phone, stay on the sheet.
 - **Undo** takes back the amount this phone just sent for that line, unless Testing mode is blocking count saves.

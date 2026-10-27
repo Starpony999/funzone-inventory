@@ -101,6 +101,7 @@ function handle_(body) {
     if (action === "applyCount") return withLock_(function () { return applyCount_(body); });
     if (action === "saveBarcode") return withLock_(function () { return saveBarcode_(body); });
     if (action === "addItem") return withLock_(function () { return addItem_(body); });
+    if (action === "savePerOz") return withLock_(function () { return savePerOz_(body); });
   } catch (err) {
     return { ok: false, error: err.code || "script-error", message: err.message || String(err) };
   }
@@ -455,6 +456,79 @@ function addItem_(body) {
   sheet.getRange(dest, 2).setValue(tickets);
   copyTotalFormulas_(sheet, template, dest);
   return { ok: true, mode: "appended", row: dest, tab: sheet.getName() };
+}
+
+// Fill a blank column D. piecesPer10 is "how many pieces equal 10 oz?"
+// If at least half of the filled D cells on this tab are formulas, write =N/10.
+// Otherwise write the number N/10. Never replace a D cell that already has a formula.
+function savePerOz_(body) {
+  var store = body.store === "CPR" ? "CPR" : "WPR";
+  var pieces = Number(body.piecesPer10);
+  if (!isFinite(pieces) || pieces <= 0 || Math.round(pieces) !== pieces) {
+    return { ok: false, error: "bad-per-oz", message: "Enter a whole number of pieces." };
+  }
+  var now = storeNow_();
+  var ss = openInventory_(now.year);
+  var sheet = ensureMonth_(ss, store);
+  var row = findItemRow_(sheet, body.item);
+  if (!row) {
+    return {
+      ok: false,
+      error: "not-on-sheet",
+      message: String(body.item || "That item") + " is not on " + sheet.getName() + "."
+    };
+  }
+  var cell = sheet.getRange(row, 4);
+  if (cell.getFormula()) {
+    return { ok: true, skipped: "formula", perOz: numOrNull_(cell.getValue()), tab: sheet.getName() };
+  }
+  var style = perOzWrite_(pieces, sampleColumnD_(sheet));
+  var format = samplePerOzFormat_(sheet);
+  if (format) cell.setNumberFormat(format);
+  if (style.formula) cell.setFormula(style.formula);
+  else cell.setValue(style.value);
+  return { ok: true, perOz: style.value, formula: style.formula || "", tab: sheet.getName() };
+}
+
+function sampleColumnD_(sheet) {
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+  var height = last - 1;
+  var names = sheet.getRange(2, 1, height, 1).getValues();
+  var formulas = sheet.getRange(2, 4, height, 1).getFormulas();
+  var values = sheet.getRange(2, 4, height, 1).getValues();
+  var out = [];
+  for (var i = 0; i < names.length; i++) {
+    if (!String(names[i][0] || "").replace(/^\s+|\s+$/g, "")) continue;
+    if (formulas[i][0]) out.push(formulas[i][0]);
+    else if (values[i][0] !== "" && values[i][0] != null) out.push(values[i][0]);
+  }
+  return out;
+}
+
+function samplePerOzFormat_(sheet) {
+  var last = sheet.getLastRow();
+  if (last < 2) return "General";
+  var height = Math.min(last - 1, 80);
+  var formulas = sheet.getRange(2, 4, height, 1).getFormulas();
+  var values = sheet.getRange(2, 4, height, 1).getValues();
+  var formats = sheet.getRange(2, 4, height, 1).getNumberFormats();
+  for (var i = 0; i < formulas.length; i++) {
+    if (formulas[i][0] || (values[i][0] !== "" && values[i][0] != null)) return formats[i][0] || "General";
+  }
+  return "General";
+}
+
+function perOzWrite_(pieces, samples) {
+  var filled = 0;
+  var formulas = 0;
+  for (var i = 0; i < samples.length; i++) {
+    if (samples[i] == null || samples[i] === "") continue;
+    filled++;
+    if (String(samples[i]).charAt(0) === "=") formulas++;
+  }
+  if (filled > 0 && formulas * 2 >= filled) return { formula: "=" + pieces + "/10", value: pieces / 10 };
+  return { formula: "", value: pieces / 10 };
 }
 
 function lastItemRow_(sheet) {

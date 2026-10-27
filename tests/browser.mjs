@@ -327,6 +327,24 @@ try {
   await page.screenshot({ path: `${outDir}/19-sheet-settings.png` });
   await click(page, '[data-action="back"]');
 
+  await click(page, '[data-action="menu"]');
+  await click(page, '[data-action="change-store"]');
+  await click(page, '[data-action="store"][data-store="WPR"]');
+  await click(page, '[data-action="section"][data-section="Front"]');
+  await page.type("#typed", "070330334412");
+  await click(page, '[data-action="lookup"]');
+  await see(page, "Princess Tiara");
+  await click(page, '[data-action="kind-weight"]');
+  await see(page, "How many pieces equal 10 oz?");
+  await pad(page, ["3", "0"]);
+  await see(page, "30");
+  await page.screenshot({ path: `${outDir}/20-pieces-per-10-oz.png` });
+  await click(page, '[data-action="save-per10"]');
+  await see(page, "Enter the weight");
+  await click(page, '[data-action="field"][data-field="oz"]');
+  await pad(page, ["1", "0"]);
+  await see(page, "30 pcs");
+
   const zxingPage = await browser.newPage();
   zxingPage.on("pageerror", (err) => errors.push("zxing: " + String(err)));
   await zxingPage.evaluateOnNewDocument(() => {

@@ -4,6 +4,7 @@ import {
   mapCountOntoRow,
   monthTabName,
   parseMonthTab,
+  perOzWrite,
   pickMonthTab,
   rewriteFormula,
 } from "../js/sheetmap.js";
@@ -59,6 +60,23 @@ describe("formula copy", () => {
     assert.equal(rewriteFormula("=SUM(I2:M2)+H2", 2, 10), "=SUM(I10:M10)+H10");
     assert.equal(rewriteFormula("=ROUND(T2*(U2/4),0)", 2, 10), "=ROUND(T10*(U10/4),0)");
     assert.equal(rewriteFormula("=$A$2", 2, 10), "=$A$2");
+  });
+});
+
+describe("pieces per ounce", () => {
+  test("a formula-style tab stores =pieces/10", () => {
+    const written = perOzWrite(25, ["=20/4.2", "=3/5", 1.3]);
+    assert.deepEqual(written, { formula: "=25/10", value: 2.5 });
+  });
+
+  test("a number-style tab stores the divided value", () => {
+    const written = perOzWrite(30, [3, 4.24, 1.3, "=20/4.2"]);
+    assert.deepEqual(written, { formula: null, value: 3 });
+  });
+
+  test("a blank tab stores the divided value", () => {
+    assert.deepEqual(perOzWrite(10, []), { formula: null, value: 1 });
+    assert.deepEqual(perOzWrite(10, ["", null]), { formula: null, value: 1 });
   });
 });
 

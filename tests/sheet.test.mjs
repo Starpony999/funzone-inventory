@@ -12,6 +12,7 @@ import {
   resetLocalData,
   saveBarcode,
   saveCount,
+  savePiecesPer10,
   setSheetClient,
   setTesting,
   whenSheetIdle,
@@ -182,6 +183,34 @@ describe("sheet writes", { concurrency: false }, () => {
     assert.equal(calls[1].store, "CPR");
     assert.equal(getPendingSheetRows().items.length, 0);
     assert.equal(getPendingSheetRows().barcodes.length, 0);
+  });
+});
+
+describe("pieces per 10 ounces", { concurrency: false }, () => {
+  test("the rate is remembered and sent as the piece count for 10 ounces", async () => {
+    const calls = recordingClient();
+    const perOz = savePiecesPer10("WPR", "Princess Tiara 5in Asmt (12 in bag)", 30);
+    assert.equal(perOz, 3);
+    await whenSheetIdle();
+    assert.equal(calls[0].action, "savePerOz");
+    assert.equal(calls[0].piecesPer10, 30);
+    assert.equal(calls[0].store, "WPR");
+    const item = getItems("WPR").find((row) => row.name.startsWith("Princess Tiara"));
+    assert.equal(item.perOz, 3);
+    savePiecesPer10("WPR", "Princess Tiara 5in Asmt (12 in bag)", 20);
+    await whenSheetIdle();
+    assert.equal(calls.filter((call) => call.action === "savePerOz").at(-1).piecesPer10, 20);
+    assert.equal(getItems("WPR").find((row) => row.name.startsWith("Princess Tiara")).perOz, 2);
+  });
+
+  test("Don't save new items keeps the rate on the phone and skips the sheet", async () => {
+    const calls = recordingClient();
+    setTesting({ skipItems: true });
+    const perOz = savePiecesPer10("CPR", "flarp Noise Putty", 40);
+    await whenSheetIdle();
+    assert.equal(perOz, 4);
+    assert.equal(calls.length, 0);
+    assert.equal(getItems("CPR").find((row) => row.name === "flarp Noise Putty").perOz, 4);
   });
 });
 

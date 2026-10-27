@@ -163,6 +163,25 @@ function round3(number) {
   return Math.round(number * 1000) / 1000;
 }
 
+/**
+ * How to fill a blank column D after staff answer "how many pieces equal 10 oz?"
+ *
+ * samples are the filled D cells already on the tab: a string starting with "="
+ * is a formula, anything else that isn't blank is a plain number.
+ * If at least half of those cells are formulas, write "=N/10" (the same
+ * pieces-over-ounces style, using the 10 ounces they just counted).
+ * Otherwise write the number N/10. A tab with nothing in column D yet gets the number.
+ */
+export function perOzWrite(piecesPer10, samples) {
+  const pieces = Number(piecesPer10);
+  const perOz = pieces / 10;
+  const filled = (samples || []).filter((cell) => cell != null && cell !== "");
+  const formulas = filled.filter((cell) => typeof cell === "string" && cell.startsWith("="));
+  const useFormula = filled.length > 0 && formulas.length * 2 >= filled.length;
+  if (useFormula) return { formula: "=" + String(pieces) + "/10", value: perOz };
+  return { formula: null, value: perOz };
+}
+
 export function splitOunces(totalOz) {
   const safe = Math.max(0, Math.round(totalOz * 10) / 10);
   let lb = Math.floor((safe + 1e-9) / 16);

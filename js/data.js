@@ -122,6 +122,7 @@ const KEYS = {
   barcodes: "fz-sheet-barcodes",
   outbox: "fz-sheet-outbox",
   status: "fz-sheet-status",
+  perOz: "fz-per-oz",
 };
 
 const mem = {
@@ -132,6 +133,7 @@ const mem = {
   catalog: null,
   barcodes: undefined,
   outbox: null,
+  perOz: null,
 };
 
 const ZERO_AMOUNT = { pieces: 0, ounces: 0, quarters: 0 };
@@ -228,12 +230,26 @@ function sheetItems(store) {
   })).filter((item) => item.name);
 }
 
+function readPerOzMap() {
+  if (mem.perOz == null) mem.perOz = readJSON(KEYS.perOz, {});
+  return mem.perOz;
+}
+
+function withSavedPerOz(store, items) {
+  const saved = readPerOzMap();
+  return items.map((item) => {
+    const perOz = saved[store + ":" + item.name];
+    if (perOz > 0) return { ...item, perOz };
+    return item;
+  });
+}
+
 function storeItems(store) {
   const fromSheet = sheetItems(store);
   const catalog = fromSheet || (ITEMS[store] || []).map((item) => ({ ...item }));
   const names = new Set(catalog.map((item) => item.name.toLowerCase()));
   const extras = (readAdded()[store] || []).filter((item) => item?.name && !names.has(item.name.toLowerCase()));
-  return [...catalog, ...extras];
+  return withSavedPerOz(store, [...catalog, ...extras]);
 }
 
 function cachedBarcodeRows() {
@@ -311,6 +327,7 @@ function makeId() {
 function jobKey(job) {
   if (job.action === "addItem") return "add:" + job.store + ":" + job.name;
   if (job.action === "saveBarcode") return "bar:" + job.store + ":" + job.code + ":" + job.name;
+  if (job.action === "savePerOz") return "peroz:" + job.store + ":" + job.item;
   return "job:" + job.id;
 }
 
@@ -473,9 +490,14 @@ function enqueue(job) {
   const box = readOutbox();
   const record = { id: makeId(), ...job };
   const key = jobKey(record);
-  if (job.action !== "applyCount" && box.some((item) => jobKey(item) === key)) {
-    schedulePump();
-    return;
+  if (job.action !== "applyCount") {
+    const existing = box.find((item) => jobKey(item) === key);
+    if (existing) {
+      if (job.action === "savePerOz") existing.piecesPer10 = job.piecesPer10;
+      writeOutbox(box);
+      schedulePump();
+      return;
+    }
   }
   box.push(record);
   writeOutbox(box);
@@ -784,6 +806,43 @@ export function addItem(store, { name, ticketValue } = {}) {
   return { ...item };
 }
 
+// Staff counted how many pieces are in 10 ounces. Divide by 10 and remember it
+// on this phone immediately. Write column D unless Testing mode is blocking
+// new-item saves. "Don't save counts" does not block this.
+export function savePiecesPer10(store, itemName, piecesPer10) {
+  const name = String(itemName || "").trim();
+  const pieces = typeof piecesPer10 === "number" ? piecesPer10 : Number(piecesPer10);
+  if (!name || (store !== "WPR" && store !== "CPR")) return null;
+  if (!Number.isSafeInteger(pieces) || pieces <= 0) return null;
+  const perOz = pieces / 10;
+  const saved = readPerOzMap();
+  saved[store + ":" + name] = perOz;
+  mem.perOz = saved;
+  writeJSON(KEYS.perOz, saved);
+  const catalog = readCatalog();
+  const block = catalog[store];
+  if (block && Array.isArray(block.items)) {
+    for (const item of block.items) {
+      if (String(item.name || "").trim().toLowerCase() === name.toLowerCase()) item.perOz = perOz;
+    }
+    writeJSON(KEYS.catalog, catalog);
+  }
+  const added = readAdded();
+  for (const item of added[store] || []) {
+    if (item.name.toLowerCase() === name.toLowerCase()) item.perOz = perOz;
+  }
+  writeJSON(KEYS.added, added);
+  if (sheetEnabled() && !getTesting().skipItems) {
+    enqueue({
+      action: "savePerOz",
+      store,
+      item: name,
+      piecesPer10: pieces,
+    });
+  }
+  return perOz;
+}
+
 // Rows still waiting for Google Sheets. Items go on the store's month tab.
 // Barcodes go on the FunZone Barcodes sheet.
 export function getPendingSheetRows() {
@@ -986,6 +1045,7 @@ export function resetLocalData() {
   mem.catalog = {};
   mem.barcodes = undefined;
   mem.outbox = [];
+  mem.perOz = {};
   writeJSON(KEYS.learned, mem.learned);
   writeJSON(KEYS.session, mem.session);
   writeJSON(KEYS.packs, mem.packs);
@@ -996,6 +1056,7 @@ export function resetLocalData() {
   writeJSON(KEYS.testing, {});
   writeJSON(KEYS.connection, {});
   writeJSON(KEYS.status, {});
+  writeJSON(KEYS.perOz, {});
   try {
     globalThis.localStorage?.removeItem(KEYS.barcodes);
   } catch {
@@ -1012,4 +1073,5 @@ export function reloadLocalData() {
   mem.catalog = null;
   mem.barcodes = undefined;
   mem.outbox = null;
+  mem.perOz = null;
 }

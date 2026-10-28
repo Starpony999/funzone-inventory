@@ -91,6 +91,18 @@ describe("catalog and barcodes", { concurrency: false }, () => {
     const offList = searchCatalog("CPR", "jelle pets");
     assert.equal(offList[0].name, "Oh So Jelle Pets");
     assert.equal(itemMatchesQuery("Laser Spin Top 1.5in Asmt", [], "1.5"), true);
+    assert.equal(itemMatchesQuery(
+      "Soldier Figurines 2in Asmt (Army Men) (144/bag)",
+      [],
+      "army men 2in",
+    ), true);
+    assert.equal(itemMatchesQuery(
+      "Soldier Figurines 2in Asmt (Army Men) (144/bag)",
+      [],
+      "ARMY, men (2in)",
+    ), true);
+    assert.equal(itemMatchesQuery("Smarties XTreme Sour", [], "xtreme sour"), true);
+    assert.equal(searchCatalog("CPR", "army men 2in").some((item) => /soldier/i.test(item.name)), false);
     assert.equal(searchCatalog("WPR", "").length, 0);
   });
 

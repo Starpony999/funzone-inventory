@@ -2,19 +2,25 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "node:test";
 import {
   addItem,
+  CATALOG_STALE_MS,
+  catalogInfo,
+  catalogNeedsRefresh,
   getCounts,
   getItems,
   getPendingSheetRows,
   getTesting,
   lookupBarcode,
+  onSheetRecovered,
   refreshStore,
   removeCount,
   resetLocalData,
   saveBarcode,
   saveCount,
   savePiecesPer10,
+  searchCatalog,
   setSheetClient,
   setTesting,
+  testConnection,
   whenSheetIdle,
 } from "../js/data.js";
 
@@ -36,6 +42,7 @@ const sheetBarcodes = [
 ];
 
 beforeEach(async () => {
+  onSheetRecovered(null);
   setSheetClient(null);
   await whenSheetIdle();
   resetLocalData();
@@ -80,6 +87,51 @@ describe("sheet cache", { concurrency: false }, () => {
     assert.equal(found.item.name, "Only On The Sheet");
     assert.equal(found.source, "barcode");
     assert.equal(lookupBarcode("070330123451", "WPR").item, null);
+  });
+
+  test("a failed catalog load stays on the sample list until a later request succeeds", async () => {
+    let fail = true;
+    setSheetClient(async (payload) => {
+      if (payload.action === "getCatalog" && fail) {
+        const err = new Error("Specified permissions are not sufficient to call SpreadsheetApp.openById");
+        err.code = "script-error";
+        throw err;
+      }
+      if (payload.action === "getCatalog") {
+        return {
+          ok: true,
+          tab: "CPR - Oct 2026",
+          items: [
+            { name: "Soldier Figurines 2in Asmt (Army Men) (144/bag)", tickets: 10 },
+            { name: "Smarties XTreme Sour", tickets: 15 },
+          ],
+          barcodes: [],
+        };
+      }
+      return { ok: true };
+    });
+    let reload = Promise.resolve();
+    onSheetRecovered(() => {
+      reload = refreshStore("CPR");
+    });
+    const failed = await refreshStore("CPR");
+    assert.equal(failed.ok, false);
+    assert.equal(catalogInfo("CPR").source, "sample");
+    assert.equal(catalogNeedsRefresh("CPR"), true);
+    assert.equal(getItems("CPR").some((item) => /soldier/i.test(item.name)), false);
+    assert.equal(searchCatalog("CPR", "army men 2in").length, 0);
+    fail = false;
+    await testConnection();
+    await reload;
+    assert.equal(catalogInfo("CPR").source, "sheet");
+    assert.equal(catalogInfo("CPR").tab, "CPR - Oct 2026");
+    assert.equal(
+      searchCatalog("CPR", "army men 2in")[0].name,
+      "Soldier Figurines 2in Asmt (Army Men) (144/bag)",
+    );
+    assert.equal(searchCatalog("CPR", "xtreme sour")[0].name, "Smarties XTreme Sour");
+    assert.equal(catalogNeedsRefresh("CPR"), false);
+    assert.equal(catalogNeedsRefresh("CPR", Date.now() + CATALOG_STALE_MS + 1000), true);
   });
 });
 

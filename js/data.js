@@ -379,7 +379,25 @@ async function sheetRequest(action, body) {
     err.code = data?.error || "sheet-error";
     throw err;
   }
+  // A later success means the script is reachable again. Reload the month
+  // list if the last attempt failed. getCatalog itself is that reload.
+  if (action !== "getCatalog" && getSheetStatus().error) notifySheetRecovered();
   return data;
+}
+
+let sheetRecovered = null;
+
+export function onSheetRecovered(fn) {
+  sheetRecovered = typeof fn === "function" ? fn : null;
+}
+
+function notifySheetRecovered() {
+  if (!sheetRecovered) return;
+  try {
+    sheetRecovered();
+  } catch {
+    // A bad handler must not fail the request that just succeeded.
+  }
 }
 
 function isPermanent(err) {
@@ -572,9 +590,18 @@ function applyBarcodes(rows) {
   writeJSON(KEYS.barcodes, mem.barcodes);
 }
 
+const refreshInflight = new Map();
+
 export async function refreshStore(store) {
   if (store !== "WPR" && store !== "CPR") return { ok: false, reason: "bad-store" };
   if (!sheetEnabled()) return { ok: false, reason: "not-configured" };
+  if (refreshInflight.has(store)) return refreshInflight.get(store);
+  const job = refreshStoreNow(store).finally(() => refreshInflight.delete(store));
+  refreshInflight.set(store, job);
+  return job;
+}
+
+async function refreshStoreNow(store) {
   try {
     const data = await sheetRequest("getCatalog", { store });
     applyCatalog(store, data);
@@ -587,6 +614,25 @@ export async function refreshStore(store) {
     setSheetStatus({ error: err.code || "offline", message: err.message || "Couldn't reach the sheet." });
     return { ok: false, reason: err.code || "offline", message: err.message || "" };
   }
+}
+
+// "sheet" is the saved month tab. "sample" is the built-in list in this file.
+export function catalogInfo(store) {
+  const block = readCatalog()[store];
+  if (block && Array.isArray(block.items)) {
+    return { source: "sheet", fetchedAt: Number(block.fetchedAt) || 0, tab: block.tab || "" };
+  }
+  return { source: "sample", fetchedAt: 0, tab: "" };
+}
+
+// A few minutes. The phone reloads while the list is missing or older than this.
+export const CATALOG_STALE_MS = 5 * 60 * 1000;
+
+export function catalogNeedsRefresh(store, now = Date.now()) {
+  if (store !== "WPR" && store !== "CPR") return false;
+  const info = catalogInfo(store);
+  if (info.source !== "sheet") return true;
+  return now - info.fetchedAt > CATALOG_STALE_MS;
 }
 
 export async function testConnection() {
@@ -719,21 +765,28 @@ export function getItems(store) {
   return storeItems(store).map((item) => ({ ...item }));
 }
 
-// Each word of the query must start a word in the name ("pou" matches "Pouch",
-// "art" does not match "Smarties"). A token with punctuation matches that
-// text in the name ("1.5"). Four or more digits also match a barcode.
+// Words of a query, with case and punctuation (including parentheses) removed.
+// "army men (2in)" and "army men 2in" are the same three words.
+function queryTokens(query) {
+  return String(query || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+function nameWords(name) {
+  return String(name || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+// Each typed word must start a word in the name, in any order.
+// "pou" matches "Pouch". "art" does not match "Smarties".
+// "army men 2in" matches "Soldier Figurines 2in Asmt (Army Men)".
+// Four or more digits also match a barcode.
 export function itemMatchesQuery(name, codes, query) {
-  const tokens = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const tokens = queryTokens(query);
   if (!tokens.length || !String(name || "").trim()) return false;
-  const lower = String(name).toLowerCase();
-  const words = lower.split(/[^a-z0-9]+/).filter(Boolean);
+  const words = nameWords(name);
   const digits = (codes || []).map((code) => String(code).replace(/\D/g, "")).filter(Boolean);
   return tokens.every((token) => {
-    const bare = token.replace(/[^a-z0-9]/g, "");
-    if (bare && words.some((word) => word.startsWith(bare))) return true;
-    if (/[^a-z0-9]/i.test(token) && lower.includes(token)) return true;
-    const numeric = token.replace(/\D/g, "");
-    if (numeric.length >= 4 && digits.some((code) => code.includes(numeric))) return true;
+    if (words.some((word) => word.startsWith(token))) return true;
+    if (token.length >= 4 && /^\d+$/.test(token) && digits.some((code) => code.includes(token))) return true;
     return false;
   });
 }
@@ -743,11 +796,10 @@ function searchRank(name, query) {
   const q = String(query || "").trim().toLowerCase();
   if (n === q) return 0;
   if (n.startsWith(q)) return 1;
-  const words = n.split(/[^a-z0-9]+/).filter(Boolean);
+  const words = nameWords(name);
   let from = 0;
-  for (const token of q.split(/\s+/)) {
-    const bare = token.replace(/[^a-z0-9]/g, "");
-    const at = words.findIndex((word, index) => index >= from && bare && word.startsWith(bare));
+  for (const token of queryTokens(query)) {
+    const at = words.findIndex((word, index) => index >= from && word.startsWith(token));
     if (at < 0) return 3;
     from = at + 1;
   }

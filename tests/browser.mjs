@@ -52,6 +52,7 @@ try {
   await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
   await page.goto(base, { waitUntil: "networkidle0" });
   await see(page, "Which store?");
+  assert.equal((await text(page)).includes("Showing sample items"), false);
   await shot(page, "01-store");
 
   await click(page, '[data-action="store"][data-store="WPR"]');
@@ -396,6 +397,27 @@ try {
   });
   await zxingPage.screenshot({ path: `${outDir}/22-camera-zoom.png` });
   await zxingPage.click('[data-action="stop-camera"]');
+
+  const noticePage = await browser.newPage();
+  noticePage.on("pageerror", (err) => errors.push("notice: " + String(err)));
+  await noticePage.evaluateOnNewDocument(() => {
+    try {
+      localStorage.setItem("fz-sheet-connection", JSON.stringify({
+        url: "https://sheets.example/exec",
+        pin: "1234",
+      }));
+    } catch {
+      // about:blank has no storage. The real page still gets the override.
+    }
+    window.fetch = () => Promise.reject(new Error("down"));
+  });
+  await noticePage.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  await noticePage.goto(base, { waitUntil: "domcontentloaded" });
+  await see(noticePage, "Showing sample items");
+  await see(noticePage, "couldn't load the sheet");
+  await see(noticePage, "Tap to retry");
+  await noticePage.waitForSelector('[data-action="retry-catalog"]');
+  await noticePage.screenshot({ path: `${outDir}/23-sample-catalog.png` });
 
   assert.deepEqual(errors, []);
   console.log("browser flow ok");

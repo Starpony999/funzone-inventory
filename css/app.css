@@ -97,6 +97,13 @@ button:disabled { cursor: not-allowed; }
   border: 1px solid #fdba74;
   font-weight: 650;
 }
+.note.sample {
+  background: var(--accent-subtle);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  margin-top: 8px;
+}
+.note.sample .btn { margin-top: 8px; min-height: 44px; }
 
 .header {
   margin-bottom: 12px;

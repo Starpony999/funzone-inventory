@@ -9,12 +9,15 @@ import {
   formatPieces,
   formatTickets,
   getCounts,
+  catalogInfo,
+  catalogNeedsRefresh,
   getConnection,
   getItems,
   getPackSize,
   getPrefs,
   getSheetStatus,
   getTesting,
+  itemMatchesQuery,
   lookupBarcode,
   parsePack,
   searchCatalog,
@@ -25,9 +28,11 @@ import {
   saveConnection,
   saveCount,
   savePackSize,
+  onSheetRecovered,
   savePiecesPer10,
   savePrefs,
   setTesting,
+  sheetEnabled,
   testConnection,
   testingOn,
   totalOz,
@@ -126,8 +131,10 @@ function packWord() {
 
 function filteredItems() {
   const items = state.store ? getItems(state.store) : [];
-  const query = state.search.trim().toLowerCase();
-  const list = query ? items.filter((item) => item.name.toLowerCase().includes(query)) : items;
+  const query = state.search.trim();
+  const list = query
+    ? items.filter((item) => itemMatchesQuery(item.name, [item.barcode], query))
+    : items;
   return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -171,10 +178,34 @@ function statusNote() {
   return { testing: false, text: "The Google Sheet is connected. Pick a store and counts will be saved there." };
 }
 
-function shell() {
-  const note = statusNote();
+function sampleBanner() {
+  if (!state.store) return "";
+  if (catalogInfo(state.store).source === "sheet") return "";
+  const status = getSheetStatus();
+  if (!getConnection().configured && !status.error) return "";
+  const detail = status.message
+    ? `<div class="small" style="margin-top:6px">${esc(status.message)}</div>`
+    : "";
   return `
-    <p class="note${note.testing ? " testing" : ""}">${esc(note.text)}</p>
+    <div class="note sample">
+      Showing sample items — couldn't load the sheet. Tap to retry.
+      <button class="btn" data-action="retry-catalog">Retry</button>
+      ${detail}
+    </div>`;
+}
+
+function notesHtml() {
+  const note = statusNote();
+  const sample = sampleBanner();
+  const showNote = note.testing || !sample;
+  return `
+    ${showNote ? `<p class="note${note.testing ? " testing" : ""}">${esc(note.text)}</p>` : ""}
+    ${sample}`;
+}
+
+function shell() {
+  return `
+    <div id="statusNotes">${notesHtml()}</div>
     ${header()}
     ${body()}
     ${dialog()}
@@ -1162,6 +1193,9 @@ function onClick(event) {
     case "stop-camera":
       stopCamera();
       break;
+    case "retry-catalog":
+      retryCatalog();
+      break;
     case "lookup":
       submitSearch();
       break;
@@ -1356,6 +1390,42 @@ async function saveAndTest() {
   if (state.screen === "settings") render();
 }
 
+function syncLiveLists() {
+  const slot = document.getElementById("statusNotes");
+  if (slot) slot.innerHTML = notesHtml();
+  paintSuggestions();
+  const list = document.getElementById("pickList");
+  if (list) {
+    const items = filteredItems();
+    list.innerHTML = pickButtons(items) + pickEmpty(items);
+  }
+}
+
+function showCatalog(result, before) {
+  if (!result || !result.ok || !state.store) return;
+  const after = catalogInfo(state.store);
+  const sameSheet = before.source === "sheet" && after.source === "sheet" && before.tab === after.tab
+    && getItems(state.store).length === before.count;
+  if (sameSheet || cameraIsOn()) syncLiveLists();
+  else render();
+}
+
+function retryCatalog() {
+  if (!state.store || !sheetEnabled()) return;
+  if (!catalogNeedsRefresh(state.store) && !getSheetStatus().error) return;
+  const before = { ...catalogInfo(state.store), count: getItems(state.store).length };
+  refreshStore(state.store).then((result) => showCatalog(result, before));
+}
+
+function watchCatalog() {
+  onSheetRecovered(() => retryCatalog());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) retryCatalog();
+  });
+  window.addEventListener("focus", () => retryCatalog());
+  setInterval(retryCatalog, 3 * 60 * 1000);
+}
+
 function boot() {
   const prefs = getPrefs();
   state.entries = getCounts();
@@ -1365,6 +1435,7 @@ function boot() {
     state.screen = prefs.section ? "scan" : "section";
   }
   setOnCode((text, format) => handleCode(text, format));
+  watchCatalog();
   document.addEventListener("click", onClick);
   document.addEventListener("input", onInput);
   document.addEventListener("keydown", onKey);

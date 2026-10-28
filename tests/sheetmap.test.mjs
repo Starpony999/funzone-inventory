@@ -229,5 +229,12 @@ describe("mapCountOntoRow", () => {
     );
     assert.equal(undo.updates.J, 0);
     assert.equal(undo.clamped, true);
+    const frontShort = mapCountOntoRow(
+      { kind: "count", section: "Front" },
+      { J: 0 },
+      { pieces: -20, ounces: 0, quarters: 0, allowNegative: true },
+    );
+    assert.equal(frontShort.updates.J, -20);
+    assert.equal(frontShort.clamped, false);
   });
 });

@@ -7,6 +7,7 @@ import {
   describeEntry,
   formatNumber,
   formatPieces,
+  frontNet,
   formatTickets,
   getCounts,
   catalogInfo,
@@ -27,6 +28,7 @@ import {
   saveBarcode,
   saveConnection,
   saveCount,
+  saveMeasure,
   savePackSize,
   onSheetRecovered,
   savePiecesPer10,
@@ -66,6 +68,12 @@ const state = {
   oz: "",
   weightField: "lb",
   q1: 0,
+  countInstead: false,
+  measure: "",
+  measureInput: "",
+  pendingQ: 0,
+  binStep: "",
+  gross: 0,
   entries: [],
   editingId: null,
   returnScreen: "scan",
@@ -271,6 +279,8 @@ function body() {
     case "bin":
     case "bin2": return binScreen();
     case "bin2ask": return binAskScreen();
+    case "front-full": return frontFullScreen();
+    case "measure": return measureScreen();
     case "saved": return savedScreen();
     case "settings": return settingsScreen();
     default: return storeScreen();
@@ -473,9 +483,6 @@ function itemBanner() {
 function kindScreen() {
   const named = namedPack();
   const countSide = named ? plural(named.word) + " + loose" : "pieces";
-  const bin = state.section === "Front"
-    ? `<button class="btn" data-action="kind-bin"><span>Bin percentage</span><span class="side">how full</span></button>`
-    : "";
   return `
     ${backButton("Scan again")}
     ${itemBanner()}
@@ -483,8 +490,19 @@ function kindScreen() {
     <div class="stack" style="margin-top:12px">
       <button class="btn" data-action="kind-count"><span>Item count</span><span class="side">${esc(countSide)}</span></button>
       <button class="btn" data-action="kind-weight"><span>Weight</span><span class="side">lb + oz</span></button>
-      ${bin}
     </div>`;
+}
+
+function isFrontBin() {
+  return state.section === "Front" && !!(state.item && state.item.bin);
+}
+
+function landOnItem() {
+  state.countInstead = false;
+  state.measure = "";
+  state.binStep = "";
+  state.screen = isFrontBin() ? "bin" : "kind";
+  render();
 }
 
 function fieldButton(active, value, label, field) {
@@ -572,12 +590,42 @@ function binScreen() {
     ${itemBanner()}
     <h1 class="tight">${second ? "How full is the second bin?" : "How full is the bin?"}</h1>
     ${second ? `<p class="sub">First bin: ${esc(formatBin(state.q1))}</p>` : ""}
-    <div class="bins">${buttons}</div>`;
+    <div class="bins">${buttons}</div>
+    ${second ? "" : `<button class="btn count-instead" data-action="count-instead">Count instead</button>`}`;
 }
 
 function formatBin(q) {
   const found = BIN_WORDS.find((bin) => bin.q === q);
   return found ? found.word : String(q);
+}
+
+function frontFullScreen() {
+  return `
+    ${backButton("Back")}
+    ${itemBanner()}
+    <h1 class="tight">Is the front of the bin full?</h1>
+    <p class="sub">You counted ${esc(formatNumber(state.gross))} pieces.</p>
+    <div class="stack">
+      <button class="btn" data-action="front-yes"><span>Yes</span></button>
+      <button class="btn" data-action="front-no"><span>No</span></button>
+    </div>`;
+}
+
+function measureScreen() {
+  const front = state.measure === "front";
+  const ready = Number(state.measureInput) > 0;
+  const held = getTesting().skipItems
+    ? `<p class="small">Testing mode: this is used for the count, and it is not written to the sheet.</p>`
+    : `<p class="small">This is saved on the item so it is not asked again.</p>`;
+  return `
+    ${backButton("Cancel")}
+    ${itemBanner()}
+    <h1>${front ? "How many pieces fit in the front of the bin?" : "How many pieces fill one full bin?"}</h1>
+    <p class="sub">${front ? "This is the amount in the front of a full bin." : "This is one full bin of this item."}</p>
+    <div class="figure">${esc(state.measureInput || "0")}</div>
+    ${numPad(false)}
+    ${held}
+    <button class="btn primary save" data-action="save-measure" ${ready ? "" : "disabled"}>Continue</button>`;
 }
 
 function binAskScreen() {
@@ -803,8 +851,7 @@ function selectKnownItem(item) {
   state.justMatched = false;
   state.pendingCode = "";
   state.item = item;
-  state.screen = "kind";
-  render();
+  landOnItem();
 }
 
 function submitSearch() {
@@ -854,7 +901,8 @@ function handleCode(raw, format) {
   if (found.item) {
     state.item = found.item;
     state.pendingCode = found.raw || typed;
-    state.screen = "kind";
+    landOnItem();
+    return;
   } else {
     state.item = null;
     state.pendingCode = typed;
@@ -871,8 +919,7 @@ function chooseItem(name) {
   state.item = item;
   state.justMatched = true;
   state.nameError = "";
-  state.screen = "kind";
-  render();
+  landOnItem();
 }
 
 function startNewProduct() {
@@ -909,10 +956,9 @@ function saveNewProduct() {
     return;
   }
   saveBarcode(state.pendingCode, state.store, item.name, { pending: true });
-  state.item = item;
+  state.item = getItems(state.store).find((row) => row.name === item.name) || item;
   state.justMatched = true;
-  state.screen = "kind";
-  render();
+  landOnItem();
 }
 
 function savePer10() {
@@ -981,23 +1027,91 @@ function commit(partial, replaceIds) {
   });
 }
 
-function saveCountScreen() {
+function chooseQuarter(quarters) {
+  if (state.screen === "bin2") state.binStep = "second";
+  else state.binStep = "";
+  if (!state.item || !state.item.fullBin) {
+    state.pendingQ = quarters;
+    state.measure = "fullBin";
+    state.measureInput = "";
+    state.screen = "measure";
+    render();
+    return;
+  }
+  finishQuarter(quarters);
+}
+
+function finishQuarter(quarters) {
+  if (state.binStep === "second") {
+    saveDraft({ kind: "bin", q1: state.q1, q2: quarters });
+    return;
+  }
+  if (state.store === "CPR" && state.item && state.item.doubleBin) {
+    state.q1 = quarters;
+    state.screen = "bin2ask";
+    render();
+    return;
+  }
+  saveDraft({ kind: "bin", q1: quarters });
+}
+
+function saveMeasureScreen() {
+  const pieces = Number(state.measureInput);
+  if (!Number.isSafeInteger(pieces) || pieces <= 0 || !state.item || !state.store) return;
+  const field = state.measure === "front" ? "frontCount" : "fullBin";
+  const saved = saveMeasure(state.store, state.item.name, field, pieces);
+  if (saved == null) return;
+  state.item = { ...state.item, [field]: saved };
+  const quarters = state.pendingQ;
+  state.measure = "";
+  state.measureInput = "";
+  if (field === "frontCount") {
+    saveFrontAdjusted(frontNet(state.gross, saved), saved);
+    return;
+  }
+  finishQuarter(quarters);
+}
+
+function countTotal() {
   const size = packSize();
   const nBoxes = Number(state.boxes || 0);
   const nLoose = Number(state.loose || 0);
-  if (usingBoxes() && nBoxes > 0 && size > 0) {
-    if (!namedPack() && state.store && state.item) savePackSize(state.store, state.item.name, size);
-    saveDraft({
-      kind: "count",
-      count: nBoxes * size + nLoose,
-      boxes: nBoxes,
-      perBox: size,
-      loose: nLoose,
-      packWord: packWord(),
-    });
+  if (usingBoxes() && nBoxes > 0 && size > 0) return nBoxes * size + nLoose;
+  return nLoose;
+}
+
+function countPayload(count, extra) {
+  const size = packSize();
+  const nBoxes = Number(state.boxes || 0);
+  const nLoose = Number(state.loose || 0);
+  const packed = usingBoxes() && nBoxes > 0 && size > 0;
+  if (packed && !namedPack() && state.store && state.item) savePackSize(state.store, state.item.name, size);
+  return {
+    kind: "count",
+    count,
+    loose: nLoose,
+    ...(packed ? { boxes: nBoxes, perBox: size, packWord: packWord() } : {}),
+    ...extra,
+  };
+}
+
+function saveCountScreen() {
+  const total = countTotal();
+  if (state.countInstead && isFrontBin()) {
+    state.gross = total;
+    state.screen = "front-full";
+    render();
     return;
   }
-  saveDraft({ kind: "count", count: nLoose, loose: nLoose });
+  saveDraft(countPayload(total));
+}
+
+function saveFrontAdjusted(net, frontCount) {
+  saveDraft(countPayload(net, {
+    gross: state.gross,
+    frontCount,
+    frontFull: false,
+  }));
 }
 
 function padPress(key) {
@@ -1010,6 +1124,9 @@ function padPress(key) {
   } else if (state.screen === "per10") {
     value = state.per10;
     set = (next) => { state.per10 = next; };
+  } else if (state.screen === "measure") {
+    value = state.measureInput;
+    set = (next) => { state.measureInput = next; };
   } else if (state.screen === "weight") {
     if (state.weightField === "lb") {
       value = state.lb;
@@ -1044,9 +1161,13 @@ function backTarget() {
   if (state.screen === "new-confirm") return "new-name";
   if (state.screen === "new-tickets") return "new-confirm";
   if (state.screen === "per10") return "kind";
+  if (state.screen === "measure") return state.measure === "front" ? "front-full" : "bin";
+  if (state.screen === "front-full") return "count";
   if (state.screen === "pick" || state.screen === "kind") return "scan";
   if (state.screen === "bin2") return "bin2ask";
   if (state.screen === "bin2ask") return "bin";
+  if (state.screen === "count" && state.countInstead && state.editingId == null) return "bin";
+  if (state.screen === "bin" && isFrontBin() && state.editingId == null) return "scan";
   if (state.screen === "count" || state.screen === "weight" || state.screen === "bin") {
     return state.editingId != null ? state.returnScreen || "saved" : "kind";
   }
@@ -1084,6 +1205,7 @@ function startEdit(id) {
   state.dupDraft = null;
   resetEntry();
   if (entry.kind === "count") {
+    state.countInstead = entry.frontFull === true || entry.frontFull === false;
     const named = parsePack(state.item.name);
     state.loose = entry.loose !== undefined && entry.loose !== null ? String(entry.loose) : String(entry.count ?? "");
     if (entry.boxes) state.boxes = String(entry.boxes);
@@ -1263,20 +1385,35 @@ function onClick(event) {
     case "save-count":
       saveCountScreen();
       break;
+    case "count-instead":
+      state.countInstead = true;
+      state.binStep = "";
+      startCount();
+      break;
+    case "front-yes":
+      saveDraft(countPayload(state.gross, { frontFull: true, gross: state.gross }));
+      break;
+    case "front-no":
+      if (!state.item || !state.item.frontCount) {
+        state.measure = "front";
+        state.measureInput = "";
+        state.screen = "measure";
+        render();
+      } else {
+        saveFrontAdjusted(frontNet(state.gross, state.item.frontCount), state.item.frontCount);
+      }
+      break;
+    case "save-measure":
+      saveMeasureScreen();
+      break;
     case "save-weight":
       saveDraft({ kind: "weight", lb: Number(state.lb || 0), oz: Number(state.oz || 0) });
       break;
-    case "bin": {
-      const quarters = Number(button.dataset.q);
-      if (state.screen === "bin2") saveDraft({ kind: "bin", q1: state.q1, q2: quarters });
-      else if (state.store === "CPR") {
-        state.q1 = quarters;
-        state.screen = "bin2ask";
-        render();
-      } else saveDraft({ kind: "bin", q1: quarters });
+    case "bin":
+      chooseQuarter(Number(button.dataset.q));
       break;
-    }
     case "bin-yes":
+      state.binStep = "second";
       state.screen = "bin2";
       render();
       break;
@@ -1372,7 +1509,7 @@ function onKey(event) {
     return;
   }
   if (event.target.matches("input, textarea")) return;
-  if (state.screen !== "count" && state.screen !== "weight" && state.screen !== "new-tickets" && state.screen !== "per10") return;
+  if (state.screen !== "count" && state.screen !== "weight" && state.screen !== "new-tickets" && state.screen !== "per10" && state.screen !== "measure") return;
   if (/^\d$/.test(event.key) || event.key === "Backspace" || event.key === ".") {
     event.preventDefault();
     padPress(event.key === "Backspace" ? "del" : event.key);

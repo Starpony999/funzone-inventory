@@ -365,3 +365,18 @@ describe("hand-typed count formulas", () => {
     assert.equal(save.includes("if (fFormula || gFormula)"), false);
   });
 });
+
+describe("bin item sheet", () => {
+  test("the catalog reads Bin Items and can store a full bin and a front count", () => {
+    const src = readFileSync(new URL("../apps-script/Code.gs", import.meta.url), "utf8");
+    assert.match(src, /getSheetByName\("Bin Items"\)/);
+    assert.match(src, /binItems: readBinItems_\(\)/);
+    const reader = src.slice(src.indexOf("function readBinItems_"), src.indexOf("function isDoubleBin_"));
+    assert.match(reader, /return \[\]/);
+    assert.match(src, /action === "saveFullBin"/);
+    assert.match(src, /action === "saveFrontCount"/);
+    const measure = src.slice(src.indexOf("function saveMeasure_"), src.indexOf("function readBarcodes_"));
+    assert.match(measure, /getFormula\(\)/);
+    assert.match(src, /allowNegative/);
+  });
+});

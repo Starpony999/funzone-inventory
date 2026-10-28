@@ -4,7 +4,11 @@ import {
   REAL_BARCODES,
   checkOk,
   clearSession,
+  binFlags,
   describeEntry,
+  frontNet,
+  isDoubleBin,
+  saveMeasure,
   expandUpcE,
   addItem,
   getCounts,
@@ -23,6 +27,7 @@ import {
   saveBarcode,
   saveCount,
   savePackSize,
+  setTesting,
 } from "../js/data.js";
 
 const store = new Map();
@@ -104,6 +109,36 @@ describe("catalog and barcodes", { concurrency: false }, () => {
     assert.equal(itemMatchesQuery("Smarties XTreme Sour", [], "xtreme sour"), true);
     assert.equal(searchCatalog("CPR", "army men 2in").some((item) => /soldier/i.test(item.name)), false);
     assert.equal(searchCatalog("WPR", "").length, 0);
+  });
+
+  test("bin items match the store name, and a second bin is Cottleville only", () => {
+    const rows = [{
+      short: "Army men",
+      WPR: "Soldier Figurines 2in Asmt (Army Men) (144/bag)",
+      CPR: "soldier figurines 2in asmt (army men) (144/bag)",
+      doubleBin: "Yes",
+    }];
+    assert.equal(isDoubleBin("Yes"), true);
+    assert.equal(isDoubleBin(true), true);
+    assert.equal(isDoubleBin("No"), false);
+    assert.deepEqual(binFlags("WPR", "Soldier Figurines 2in Asmt (Army Men) (144/bag)", rows), { bin: true, doubleBin: false });
+    assert.deepEqual(binFlags("CPR", "Soldier Figurines 2in Asmt (Army Men) (144/bag)", rows), { bin: true, doubleBin: true });
+    assert.deepEqual(binFlags("CPR", "Dum Dum Pops", rows), { bin: false, doubleBin: false });
+    assert.equal(frontNet(120, 50), 70);
+    assert.equal(frontNet(30, 50), -20);
+    assert.match(describeEntry({
+      kind: "count", count: 70, gross: 120, frontCount: 50, frontFull: false,
+    }), /Count 120 − front 50 = 70/);
+  });
+
+  test("a saved bin size stays on the phone when new items are not written", () => {
+    setTesting({ skipItems: true });
+    assert.equal(saveMeasure("CPR", "Dum Dum Pops", "fullBin", 400), 400);
+    assert.equal(saveMeasure("CPR", "Dum Dum Pops", "frontCount", 50), 50);
+    const item = getItems("CPR").find((row) => row.name === "Dum Dum Pops");
+    assert.equal(item.fullBin, 400);
+    assert.equal(item.frontCount, 50);
+    setTesting({ skipItems: false });
   });
 
   test("CPR Oh So Jelle Pets is confirmed even though it is off the September list", () => {

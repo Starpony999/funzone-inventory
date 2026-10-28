@@ -274,8 +274,9 @@ export function mapCountOntoRow(entry, row = {}, delta = null) {
       else if (current == null) skipped.push({ column, reason: "not a number" });
       else {
         const raw = current + amount.pieces;
-        const next = raw < 0 ? 0 : round3(raw);
-        if (raw < 0) clamped = true;
+        const allowNegative = !!(delta && delta.allowNegative);
+        const next = raw < 0 && !allowNegative ? 0 : round3(raw);
+        if (raw < 0 && !allowNegative) clamped = true;
         updates[column] = next;
       }
     }

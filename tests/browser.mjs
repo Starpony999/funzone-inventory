@@ -49,6 +49,16 @@ const browser = await puppeteer.launch({
 try {
   const page = await browser.newPage();
   page.on("pageerror", (err) => errors.push(String(err)));
+  await page.evaluateOnNewDocument(() => {
+    try {
+      localStorage.setItem("fz-bin-items", JSON.stringify([
+        { short: "Dum Dum", WPR: "Dum Dum Pops", CPR: "Dum Dum Pops", doubleBin: true },
+        { short: "Samurai", WPR: "Samurai Sword", CPR: "", doubleBin: false },
+      ]));
+    } catch {
+      // about:blank has no storage. The real page still gets the list.
+    }
+  });
   await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
   await page.goto(base, { waitUntil: "networkidle0" });
   await see(page, "Which store?");
@@ -80,7 +90,8 @@ try {
   await page.type("#typed", "011206003210");
   await click(page, '[data-action="lookup"]');
   await see(page, "Giant Smarties (36/box)");
-  await see(page, "Bin percentage");
+  await see(page, "How are you counting it?");
+  assert.equal((await text(page)).includes("Count instead"), false);
   await click(page, '[data-action="kind-count"]');
   await see(page, "Full boxes (36 each)");
   await pad(page, ["2"]);
@@ -136,8 +147,9 @@ try {
   await click(page, '[data-action="section"][data-section="Front"]');
   await page.type("#typed", "041116023459");
   await click(page, '[data-action="lookup"]');
-  await see(page, "Bin percentage");
-  await click(page, '[data-action="kind-bin"]');
+  await see(page, "How full is the bin?");
+  await see(page, "Count instead");
+  assert.equal((await text(page)).includes("How are you counting it?"), false);
   await see(page, "Quarter");
   await click(page, '[data-action="bin"][data-q="1"]');
   await see(page, "Saved");
@@ -226,7 +238,7 @@ try {
   await click(page, '[data-action="back"]');
   await page.type("#typed", "041116023459");
   await click(page, '[data-action="lookup"]');
-  await click(page, '[data-action="kind-bin"]');
+  await see(page, "How full is the bin?");
   await click(page, '[data-action="bin"][data-q="1"]');
   await see(page, "Is there a second bin?");
   await shot(page, "11-second-bin");
@@ -236,7 +248,7 @@ try {
   await click(page, '[data-action="scan-next"]');
   await page.type("#typed", "041116023459");
   await click(page, '[data-action="lookup"]');
-  await click(page, '[data-action="kind-bin"]');
+  await see(page, "How full is the bin?");
   await click(page, '[data-action="bin"][data-q="2"]');
   await see(page, "Is there a second bin?");
   await click(page, '[data-action="bin-yes"]');
@@ -251,7 +263,7 @@ try {
   await click(page, '[data-action="scan-next"]');
   await page.type("#typed", "041116023459");
   await click(page, '[data-action="lookup"]');
-  await click(page, '[data-action="kind-bin"]');
+  await see(page, "How full is the bin?");
   await click(page, '[data-action="bin"][data-q="4"]');
   await click(page, '[data-action="bin-no"]');
   await see(page, "Already counted in Front");
@@ -345,6 +357,37 @@ try {
   await click(page, '[data-action="field"][data-field="oz"]');
   await pad(page, ["1", "0"]);
   await see(page, "30 pcs");
+
+  await click(page, '[data-action="back"]');
+  await click(page, '[data-action="back"]');
+  await see(page, "Or search by name or barcode");
+  await page.click("#typed", { clickCount: 3 });
+  await page.type("#typed", "samurai");
+  await click(page, '[data-action="suggest"]');
+  await see(page, "How full is the bin?");
+  await see(page, "Count instead");
+  await page.screenshot({ path: `${outDir}/24-bin-items.png` });
+  await click(page, '[data-action="count-instead"]');
+  await see(page, "How many pieces?");
+  await pad(page, ["1", "2", "0"]);
+  await click(page, '[data-action="save-count"]');
+  await see(page, "Is the front of the bin full?");
+  await click(page, '[data-action="front-no"]');
+  await see(page, "How many pieces fit in the front of the bin?");
+  await pad(page, ["5", "0"]);
+  await page.screenshot({ path: `${outDir}/25-front-of-bin.png` });
+  await click(page, '[data-action="save-measure"]');
+  await see(page, "Count 120");
+  await see(page, "front 50");
+  await see(page, "70 pcs");
+  await click(page, '[data-action="scan-next"]');
+  await page.type("#typed", "samurai");
+  await click(page, '[data-action="suggest"]');
+  await click(page, '[data-action="bin"][data-q="4"]');
+  await see(page, "How many pieces fill one full bin?");
+  await pad(page, ["4", "0"]);
+  await click(page, '[data-action="save-measure"]');
+  await see(page, "40 pcs");
 
   const zxingPage = await browser.newPage();
   zxingPage.on("pageerror", (err) => errors.push("zxing: " + String(err)));

@@ -109,6 +109,8 @@ function handle_(body) {
     if (action === "saveBarcode") return withLock_(function () { return saveBarcode_(body); });
     if (action === "addItem") return withLock_(function () { return addItem_(body); });
     if (action === "savePerOz") return withLock_(function () { return savePerOz_(body); });
+    if (action === "saveFullBin") return withLock_(function () { return saveMeasure_(body, 20); });
+    if (action === "saveFrontCount") return withLock_(function () { return saveMeasure_(body, 9); });
   } catch (err) {
     return { ok: false, error: err.code || "script-error", message: err.message || String(err) };
   }
@@ -275,7 +277,8 @@ function getCatalog_(body) {
     tab: sheet.getName(),
     spreadsheet: ss.getName(),
     items: readItems_(sheet),
-    barcodes: readBarcodes_()
+    barcodes: readBarcodes_(),
+    binItems: readBinItems_()
   };
 }
 
@@ -289,12 +292,14 @@ function readItems_(sheet) {
     if (!name) continue;
     var perOz = numOrNull_(values[i][3]); // D
     var fullBin = numOrNull_(values[i][19]); // T
+    var frontCount = numOrNull_(values[i][8]); // I, how many in front
     items.push({
       row: i + 2,
       name: name,
       tickets: numOrNull_(values[i][1]),
       perOz: perOz != null && perOz > 0 ? perOz : null,
-      fullBin: fullBin != null && fullBin > 0 ? fullBin : null
+      fullBin: fullBin != null && fullBin > 0 ? fullBin : null,
+      frontCount: frontCount
     });
   }
   return items;
@@ -304,6 +309,66 @@ function numOrNull_(value) {
   if (value === "" || value == null || typeof value === "boolean") return null;
   var n = Number(value);
   return isFinite(n) ? n : null;
+}
+
+// Bin Items tab on the barcodes spreadsheet. Missing tab means no bins.
+function readBinItems_() {
+  var ss;
+  try {
+    ss = SpreadsheetApp.openById(BARCODES_ID);
+  } catch (err) {
+    return [];
+  }
+  var sheet = ss.getSheetByName("Bin Items");
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    var wpr = String(values[i][1] || "").replace(/^\s+|\s+$/g, "");
+    var cpr = String(values[i][2] || "").replace(/^\s+|\s+$/g, "");
+    if (!wpr && !cpr) continue;
+    rows.push({
+      short: String(values[i][0] || "").replace(/^\s+|\s+$/g, ""),
+      WPR: wpr,
+      CPR: cpr,
+      doubleBin: isDoubleBin_(values[i][3]),
+      notes: String(values[i][4] || "").replace(/^\s+|\s+$/g, "")
+    });
+  }
+  return rows;
+}
+
+function isDoubleBin_(value) {
+  if (value === true) return true;
+  var text = String(value == null ? "" : value).replace(/^\s+|\s+$/g, "").toLowerCase();
+  return text === "yes" || text === "true" || text === "y";
+}
+
+// Write a whole number into T (full bin) or I (front of the bin).
+// A blank cell or a plain number can be set. Any formula is left alone.
+function saveMeasure_(body, col) {
+  var store = body.store === "CPR" ? "CPR" : "WPR";
+  var pieces = Number(body.pieces);
+  if (!isFinite(pieces) || pieces <= 0 || Math.round(pieces) !== pieces) {
+    return { ok: false, error: "bad-measure", message: "Enter a whole number of pieces." };
+  }
+  var now = storeNow_();
+  var ss = openInventory_(now.year);
+  var sheet = ensureMonth_(ss, store);
+  var row = findItemRow_(sheet, body.item);
+  if (!row) {
+    return {
+      ok: false,
+      error: "not-on-sheet",
+      message: String(body.item || "That item") + " is not on " + sheet.getName() + "."
+    };
+  }
+  var cell = sheet.getRange(row, col);
+  if (cell.getFormula()) {
+    return { ok: true, skipped: "formula", tab: sheet.getName() };
+  }
+  cell.setValue(pieces);
+  return { ok: true, pieces: pieces, tab: sheet.getName() };
 }
 
 function readBarcodes_() {
@@ -381,7 +446,7 @@ function mapCountOntoRow_(sheet, row, section, delta) {
   if (pieces) {
     var col = SECTION_COL[section];
     if (!col) skipped.push({ column: null, reason: "unknown section" });
-    else writeAddedNumber_(sheet, row, col, pieces, updates, skipped);
+    else writeAddedNumber_(sheet, row, col, pieces, updates, skipped, !!delta.allowNegative);
   }
 
   if (ounces) {
@@ -405,11 +470,11 @@ function mapCountOntoRow_(sheet, row, section, delta) {
     }
   }
 
-  if (quarters) writeAddedNumber_(sheet, row, 21, quarters, updates, skipped);
+  if (quarters) writeAddedNumber_(sheet, row, 21, quarters, updates, skipped, false);
   return { updates: updates, skipped: skipped };
 }
 
-function writeAddedNumber_(sheet, row, col, delta, updates, skipped) {
+function writeAddedNumber_(sheet, row, col, delta, updates, skipped, allowNegative) {
   var letter = columnLetter_(col);
   var range = sheet.getRange(row, col);
   if (keepsCountFormula_(range.getFormula())) {
@@ -422,7 +487,7 @@ function writeAddedNumber_(sheet, row, col, delta, updates, skipped) {
     return;
   }
   var raw = numberOrZero_(currentRaw) + delta;
-  var next = raw < 0 ? 0 : Math.round(raw * 1000) / 1000;
+  var next = raw < 0 && !allowNegative ? 0 : Math.round(raw * 1000) / 1000;
   range.setValue(next);
   updates[letter] = next;
 }

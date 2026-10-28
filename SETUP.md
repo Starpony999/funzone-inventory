@@ -147,6 +147,12 @@ Do that only after this new script is deployed. If you delete the tab first, the
 
 If staff have already entered real October counts on that tab, do not delete it. Clear the leftover September numbers yourself in columns F, G, J, K, L, and U, including cells that show a formula made only of numbers and + − × ÷. Leave a formula that mentions another cell, and leave every other column alone.
 
+## Bin items
+
+The barcodes spreadsheet has a tab named **Bin Items**. Column A is a short name, B is the Wentzville item name, C is the Cottleville item name, D is whether Cottleville has a second bin (a checkbox, or Yes), and E is notes. The names in B and C have to match column A on that store's month tab. Only those items, and only in Front, are counted as a bin. If the tab is missing, the app does not offer bins.
+
+Paste `apps-script/Code.gs` and deploy a **New version** before staff use this. The phone cannot read the Bin Items tab until that version is published. The link and PIN stay the same.
+
 ## Update the script before staff weigh a new item
 
 The app now asks "How many pieces equal 10 oz?" when an item has no pieces-per-ounce, then writes that into column D. The script on Google has to be the new one or column D stays blank.

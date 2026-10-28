@@ -123,6 +123,8 @@ const KEYS = {
   outbox: "fz-sheet-outbox",
   status: "fz-sheet-status",
   perOz: "fz-per-oz",
+  binItems: "fz-bin-items",
+  measures: "fz-measures",
 };
 
 const mem = {
@@ -134,6 +136,8 @@ const mem = {
   barcodes: undefined,
   outbox: null,
   perOz: null,
+  binItems: undefined,
+  measures: null,
 };
 
 const ZERO_AMOUNT = { pieces: 0, ounces: 0, quarters: 0 };
@@ -227,6 +231,7 @@ function sheetItems(store) {
     fullBin: item.fullBin > 0 ? Number(item.fullBin) : null,
     perOz: item.perOz > 0 ? Number(item.perOz) : null,
     barcode: item.barcode || null,
+    frontCount: item.frontCount == null || item.frontCount === "" ? null : Number(item.frontCount),
   })).filter((item) => item.name);
 }
 
@@ -244,12 +249,54 @@ function withSavedPerOz(store, items) {
   });
 }
 
+function readBinItems() {
+  if (mem.binItems === undefined) {
+    const saved = readJSON(KEYS.binItems, []);
+    mem.binItems = Array.isArray(saved) ? saved : [];
+  }
+  return mem.binItems;
+}
+
+function applyBinItems(rows) {
+  mem.binItems = Array.isArray(rows) ? rows : [];
+  writeJSON(KEYS.binItems, mem.binItems);
+}
+
+function withBinFlags(store, items) {
+  const rows = readBinItems();
+  return items.map((item) => ({ ...item, ...binFlags(store, item.name, rows) }));
+}
+
+function readMeasures() {
+  if (mem.measures == null) {
+    const saved = readJSON(KEYS.measures, {});
+    mem.measures = {
+      fullBin: saved.fullBin && typeof saved.fullBin === "object" ? saved.fullBin : {},
+      front: saved.front && typeof saved.front === "object" ? saved.front : {},
+    };
+  }
+  return mem.measures;
+}
+
+function withSavedMeasures(store, items) {
+  const saved = readMeasures();
+  return items.map((item) => {
+    const key = store + ":" + item.name;
+    const fullBin = saved.fullBin[key];
+    const frontCount = saved.front[key];
+    const next = { ...item };
+    if (fullBin > 0) next.fullBin = fullBin;
+    if (frontCount > 0) next.frontCount = frontCount;
+    return next;
+  });
+}
+
 function storeItems(store) {
   const fromSheet = sheetItems(store);
   const catalog = fromSheet || (ITEMS[store] || []).map((item) => ({ ...item }));
   const names = new Set(catalog.map((item) => item.name.toLowerCase()));
   const extras = (readAdded()[store] || []).filter((item) => item?.name && !names.has(item.name.toLowerCase()));
-  return withSavedPerOz(store, [...catalog, ...extras]);
+  return withBinFlags(store, withSavedMeasures(store, withSavedPerOz(store, [...catalog, ...extras])));
 }
 
 function cachedBarcodeRows() {
@@ -328,6 +375,9 @@ function jobKey(job) {
   if (job.action === "addItem") return "add:" + job.store + ":" + job.name;
   if (job.action === "saveBarcode") return "bar:" + job.store + ":" + job.code + ":" + job.name;
   if (job.action === "savePerOz") return "peroz:" + job.store + ":" + job.item;
+  if (job.action === "saveFullBin" || job.action === "saveFrontCount") {
+    return "measure:" + job.action + ":" + job.store + ":" + job.item;
+  }
   return "job:" + job.id;
 }
 
@@ -512,6 +562,7 @@ function enqueue(job) {
     const existing = box.find((item) => jobKey(item) === key);
     if (existing) {
       if (job.action === "savePerOz") existing.piecesPer10 = job.piecesPer10;
+      if (job.action === "saveFullBin" || job.action === "saveFrontCount") existing.pieces = job.pieces;
       writeOutbox(box);
       schedulePump();
       return;
@@ -606,6 +657,7 @@ async function refreshStoreNow(store) {
     const data = await sheetRequest("getCatalog", { store });
     applyCatalog(store, data);
     if (Array.isArray(data.barcodes)) applyBarcodes(data.barcodes);
+    if (Array.isArray(data.binItems)) applyBinItems(data.binItems);
     setSheetStatus({ error: "", message: "", tab: data.tab || "", okAt: Date.now() });
     queueUnsynced();
     await whenSheetIdle();
@@ -709,6 +761,31 @@ export function binWord(q) {
   return found ? found.word : String(q) + "/4";
 }
 
+// Column D on the Bin Items tab: a checkbox TRUE, or Yes / true.
+export function isDoubleBin(value) {
+  if (value === true) return true;
+  const text = String(value ?? "").trim().toLowerCase();
+  return text === "yes" || text === "true" || text === "y";
+}
+
+// Match the store's name column, trimmed and case-insensitive.
+// doubleBin is only for Cottleville.
+export function binFlags(store, name, rows) {
+  const wanted = String(name || "").trim().toLowerCase();
+  const none = { bin: false, doubleBin: false };
+  if (!wanted || (store !== "WPR" && store !== "CPR")) return none;
+  for (const row of rows || []) {
+    const label = String(store === "CPR" ? row.CPR : row.WPR || "").trim().toLowerCase();
+    if (!label || label !== wanted) continue;
+    return { bin: true, doubleBin: store === "CPR" && isDoubleBin(row.doubleBin) };
+  }
+  return none;
+}
+
+export function frontNet(gross, frontCount) {
+  return Math.round(Number(gross) - Number(frontCount));
+}
+
 export function formatNumber(n) {
   return Number(n || 0).toLocaleString("en-US");
 }
@@ -739,6 +816,9 @@ export function pieces(e) {
 
 export function describeEntry(e) {
   if (e.kind === "count") {
+    if (e.frontFull === false && e.frontCount != null && e.gross != null) {
+      return "Count " + formatNumber(e.gross) + " − front " + formatNumber(e.frontCount) + " = " + formatNumber(e.count);
+    }
     if (e.boxes && e.perBox) {
       const w = e.packWord || "box";
       return formatNumber(e.boxes) + " " + (e.boxes === 1 ? w : plural(w)) + " × " + formatNumber(e.perBox) + " + " + formatNumber(e.loose || 0) + " loose";
@@ -978,6 +1058,43 @@ export function savePiecesPer10(store, itemName, piecesPer10) {
   return perOz;
 }
 
+// Remember a full-bin count (column T) or a front-of-bin count (column I).
+// Used immediately. Written to the sheet unless Don't save new items is on.
+export function saveMeasure(store, itemName, field, pieces) {
+  const name = String(itemName || "").trim();
+  const count = typeof pieces === "number" ? pieces : Number(pieces);
+  if (!name || (store !== "WPR" && store !== "CPR")) return null;
+  if (field !== "fullBin" && field !== "frontCount") return null;
+  if (!Number.isSafeInteger(count) || count <= 0) return null;
+  const saved = readMeasures();
+  const bucket = field === "fullBin" ? saved.fullBin : saved.front;
+  bucket[store + ":" + name] = count;
+  mem.measures = saved;
+  writeJSON(KEYS.measures, saved);
+  const catalog = readCatalog();
+  const block = catalog[store];
+  if (block && Array.isArray(block.items)) {
+    for (const item of block.items) {
+      if (String(item.name || "").trim().toLowerCase() === name.toLowerCase()) item[field] = count;
+    }
+    writeJSON(KEYS.catalog, catalog);
+  }
+  const added = readAdded();
+  for (const item of added[store] || []) {
+    if (String(item.name || "").toLowerCase() === name.toLowerCase()) item[field] = count;
+  }
+  writeJSON(KEYS.added, added);
+  if (sheetEnabled() && !getTesting().skipItems) {
+    enqueue({
+      action: field === "fullBin" ? "saveFullBin" : "saveFrontCount",
+      store,
+      item: name,
+      pieces: count,
+    });
+  }
+  return count;
+}
+
 // Rows still waiting for Google Sheets. Items go on the store's month tab.
 // Barcodes go on the FunZone Barcodes sheet.
 export function getPendingSheetRows() {
@@ -1015,9 +1132,10 @@ function cleanEntry(e) {
     perOz: e.perOz ?? null,
     kind: e.kind,
   };
-  for (const key of ["count", "boxes", "loose", "perBox", "packWord", "lb", "oz", "q1", "q2"]) {
+  for (const key of ["count", "boxes", "loose", "perBox", "packWord", "lb", "oz", "q1", "q2", "gross", "frontCount"]) {
     if (e[key] !== undefined && e[key] !== null) out[key] = e[key];
   }
+  if (e.frontFull === true || e.frontFull === false) out.frontFull = e.frontFull;
   if (e.sheetApplied) out.sheetApplied = { ...e.sheetApplied };
   if (e.sheetSync) out.sheetSync = e.sheetSync;
   if (e.sheetError) out.sheetError = e.sheetError;
@@ -1049,6 +1167,7 @@ function queueCount(stored, delta) {
     return;
   }
   stored.sheetSync = "pending";
+  if (stored.frontFull === false) delta.allowNegative = true;
   enqueue({
     action: "applyCount",
     store: stored.store,
@@ -1181,6 +1300,8 @@ export function resetLocalData() {
   mem.barcodes = undefined;
   mem.outbox = [];
   mem.perOz = {};
+  mem.binItems = [];
+  mem.measures = { fullBin: {}, front: {} };
   writeJSON(KEYS.learned, mem.learned);
   writeJSON(KEYS.session, mem.session);
   writeJSON(KEYS.packs, mem.packs);
@@ -1192,6 +1313,8 @@ export function resetLocalData() {
   writeJSON(KEYS.connection, {});
   writeJSON(KEYS.status, {});
   writeJSON(KEYS.perOz, {});
+  writeJSON(KEYS.binItems, []);
+  writeJSON(KEYS.measures, mem.measures);
   try {
     globalThis.localStorage?.removeItem(KEYS.barcodes);
   } catch {
@@ -1209,4 +1332,6 @@ export function reloadLocalData() {
   mem.barcodes = undefined;
   mem.outbox = null;
   mem.perOz = null;
+  mem.binItems = undefined;
+  mem.measures = null;
 }

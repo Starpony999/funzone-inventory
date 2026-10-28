@@ -4,10 +4,13 @@ import {
   mapCountOntoRow,
   monthTabName,
   parseMonthTab,
+  MONTH_RESET_COLUMNS,
   perOzWrite,
   pickMonthTab,
+  plainCountRuns,
   rewriteFormula,
 } from "../js/sheetmap.js";
+import { readFileSync } from "node:fs";
 
 const ALLOWED = new Set(["F", "G", "J", "K", "L", "U"]);
 
@@ -48,6 +51,55 @@ describe("month tabs", () => {
     const october = pickMonthTab("WPR", names.concat("WPR - Oct 2026"), new Date(2026, 9, 27));
     assert.equal(october.action, "use");
     assert.equal(october.tab, "WPR - Oct 2026");
+  });
+});
+
+describe("new month count reset", () => {
+  test("WPR and CPR blank the same count columns", () => {
+    assert.deepEqual(MONTH_RESET_COLUMNS, ["F", "G", "J", "K", "L", "U"]);
+  });
+
+  test("plain values from row 2 through the last row are cleared as one run", () => {
+    assert.deepEqual(plainCountRuns([false, false, false, false]), [
+      { startRow: 2, numRows: 4 },
+    ]);
+  });
+
+  test("formula cells split the clear and are never included", () => {
+    assert.deepEqual(plainCountRuns([false, true, false, false, true]), [
+      { startRow: 2, numRows: 1 },
+      { startRow: 4, numRows: 2 },
+    ]);
+    assert.deepEqual(plainCountRuns([true, true, true]), []);
+  });
+
+  test("a formula at the end is kept and a leading formula is kept", () => {
+    assert.deepEqual(plainCountRuns([true, false, false]), [
+      { startRow: 3, numRows: 2 },
+    ]);
+    assert.deepEqual(plainCountRuns([false, false, true]), [
+      { startRow: 2, numRows: 2 },
+    ]);
+  });
+
+  test("an unmeasured copy clears nothing", () => {
+    assert.deepEqual(plainCountRuns([]), []);
+    assert.deepEqual(plainCountRuns(null), []);
+  });
+
+  test("the script measures the previous tab before copying and clears only the copy", () => {
+    const src = readFileSync(new URL("../apps-script/Code.gs", import.meta.url), "utf8");
+    const cols = src.match(/var CLEAR_COLS = \[([^\]]+)\]/);
+    assert.ok(cols);
+    assert.deepEqual(cols[1].split(",").map((n) => Number(n.trim())), [6, 7, 10, 11, 12, 21]);
+    const ensure = src.slice(src.indexOf("function ensureMonth_"), src.indexOf("function countInputFormulaMask_"));
+    const copyAt = ensure.indexOf(".copyTo(");
+    const lastAt = ensure.indexOf("source.getLastRow()");
+    assert.ok(lastAt !== -1 && lastAt < copyAt);
+    assert.match(ensure, /countInputFormulaMask_\(source/);
+    assert.match(ensure, /clearPlainCountInputs_\(copy/);
+    assert.equal(ensure.includes("clearPlainCountInputs_(source"), false);
+    assert.equal(ensure.includes("clearContent"), false);
   });
 });
 

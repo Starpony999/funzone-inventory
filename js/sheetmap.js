@@ -78,8 +78,15 @@ export function parseMonthTab(name) {
   };
 }
 
+// Columns blanked on a new month tab after the previous month is copied.
+// Apps Script CLEAR_COLS must stay in this order: F G J K L U.
+// WPR and CPR use the same columns. The previous month's tab is not edited.
+export const MONTH_RESET_COLUMNS = ["F", "G", "J", "K", "L", "U"];
+
 // Use this month's tab when it exists. Otherwise duplicate the latest older
 // tab for that store. Spares tabs and other names are ignored.
+// ensureMonth_ in apps-script/Code.gs then blanks plain values in
+// MONTH_RESET_COLUMNS on the copy only. Formula cells in those columns stay.
 export function pickMonthTab(store, tabNames, date) {
   const wanted = monthTabName(store, date);
   const parsed = (tabNames || [])
@@ -95,6 +102,29 @@ export function pickMonthTab(store, tabNames, date) {
     .sort((a, b) => (b.year * 12 + b.month) - (a.year * 12 + a.month));
   if (!earlier.length) return { action: "missing", tab: wanted, source: null };
   return { action: "duplicate", tab: wanted, source: earlier[0].name };
+}
+
+/**
+ * Contiguous row runs to blank in one count column after a month tab is copied.
+ * formulaMask[i] is true when sheet row (i + 2) is a formula and must be kept.
+ * Every other cell from row 2 through the last row is included, blanks too,
+ * so the sheet can clear a whole run in one call without touching a formula.
+ * An empty mask clears nothing (the copy was not measured yet).
+ */
+export function plainCountRuns(formulaMask) {
+  const mask = formulaMask || [];
+  const runs = [];
+  let start = -1;
+  for (let r = 0; r <= mask.length; r++) {
+    const keep = r < mask.length && !!mask[r];
+    if (r < mask.length && !keep) {
+      if (start < 0) start = r;
+    } else if (start >= 0) {
+      runs.push({ startRow: start + 2, numRows: r - start });
+      start = -1;
+    }
+  }
+  return runs;
 }
 
 // Rewrite A1-style refs that point at the template row. Absolute rows ($2) stay.

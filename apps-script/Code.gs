@@ -12,6 +12,11 @@
  * decides which cells a count changes.
  *
  * This script never fills in a cell that already has a formula.
+ *
+ * Do not add @OnlyCurrentDoc. This script opens the inventory file and the
+ * barcodes file by id. If the project is limited to the current spreadsheet,
+ * saves fail with "Specified permissions are not sufficient to call
+ * SpreadsheetApp.openById". The scopes to put in appsscript.json are in SETUP.md.
  */
 
 var FOLDER_ID = "11ba7qa03V3YR4frWvtsp6R0wtxvH-j0T";
@@ -50,10 +55,10 @@ var MONTH_INDEX = {
   dec: 12, december: 12
 };
 
-// Count inputs cleared when a new month tab is copied. Formulas in these
-// columns are put back. Names, ticket values, pieces-per-oz, position codes,
-// and full count are not in this list.
-var CLEAR_COLS = [6, 7, 9, 10, 11, 12, 15, 19, 21]; // F G I J K L O S U
+// Plain count inputs blanked on a brand-new month tab, and nowhere else.
+// Same columns as MONTH_RESET_COLUMNS in js/sheetmap.js: F G J K L U.
+// Formulas in these columns are left alone. Every other column stays as copied.
+var CLEAR_COLS = [6, 7, 10, 11, 12, 21]; // F G J K L U
 
 var SECTION_COL = { Front: 10, Back: 11, "Break Room": 12 }; // J K L
 
@@ -188,28 +193,64 @@ function ensureMonth_(ss, store) {
     missing.code = "no-previous-tab";
     throw missing;
   }
-  var copy = ss.getSheetByName(best.name).copyTo(ss);
+  var source = ss.getSheetByName(best.name);
+  // Measure the previous tab first. getLastRow() on a sheet that copyTo()
+  // just returned is often 0 until the copy finishes, and the old clear
+  // then skipped every column. September's Front / Back / Break Room
+  // numbers stayed on October. The previous tab is only read.
+  var lastRow = source.getLastRow();
+  var masks = countInputFormulaMask_(source, lastRow);
+  var copy = source.copyTo(ss);
   copy.setName(desired);
   ss.setActiveSheet(copy);
   ss.moveActiveSheet(ss.getNumSheets());
-  clearCountInputs_(copy);
+  clearPlainCountInputs_(copy, masks);
+  SpreadsheetApp.flush();
   return copy;
 }
 
-function clearCountInputs_(sheet) {
-  var last = sheet.getLastRow();
-  if (last < 2) return;
-  var height = last - 1;
+// True where a count-input cell on the source tab is a formula.
+// Index i of the result matches CLEAR_COLS[i]. Row 0 of each mask is sheet row 2.
+function countInputFormulaMask_(sheet, lastRow) {
+  var masks = [];
+  var height = lastRow - 1;
   for (var i = 0; i < CLEAR_COLS.length; i++) {
-    var col = CLEAR_COLS[i];
-    if (col > sheet.getMaxColumns()) continue;
-    var range = sheet.getRange(2, col, height, 1);
-    var formulas = range.getFormulas();
-    range.clearContent();
-    for (var r = 0; r < formulas.length; r++) {
-      if (formulas[r][0]) sheet.getRange(r + 2, col).setFormula(formulas[r][0]);
+    var mask = [];
+    if (height >= 1 && CLEAR_COLS[i] <= sheet.getMaxColumns()) {
+      var formulas = sheet.getRange(2, CLEAR_COLS[i], height, 1).getFormulas();
+      for (var r = 0; r < formulas.length; r++) mask.push(formulas[r][0] ? true : false);
+    }
+    masks.push(mask);
+  }
+  return masks;
+}
+
+// Blank plain values in F, G, J, K, L, and U on the copied tab only.
+// masks come from the previous tab. A true entry is a formula and is not cleared.
+// Same run rules as plainCountRuns in js/sheetmap.js.
+function clearPlainCountInputs_(sheet, masks) {
+  for (var i = 0; i < CLEAR_COLS.length; i++) {
+    var runs = plainCountRuns_(masks[i] || []);
+    for (var j = 0; j < runs.length; j++) {
+      sheet.getRange(runs[j].startRow, CLEAR_COLS[i], runs[j].numRows, 1).clearContent();
     }
   }
+}
+
+function plainCountRuns_(formulaMask) {
+  var runs = [];
+  var start = -1;
+  var mask = formulaMask || [];
+  for (var r = 0; r <= mask.length; r++) {
+    var keep = r < mask.length && mask[r];
+    if (r < mask.length && !keep) {
+      if (start < 0) start = r;
+    } else if (start >= 0) {
+      runs.push({ startRow: start + 2, numRows: r - start });
+      start = -1;
+    }
+  }
+  return runs;
 }
 
 function getCatalog_(body) {

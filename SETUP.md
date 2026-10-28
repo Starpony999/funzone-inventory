@@ -20,6 +20,46 @@ You only do this once. After that, each phone gets the link and the PIN from the
 6. Paste the entire contents of `apps-script/Code.gs`.
 7. Click the save icon (or `Ctrl+S` / `Cmd+S`).
 
+## Let the script open both spreadsheets
+
+The script edits **FunZone Inventory 2026** and **FunZone Barcodes**. Those are two different files. If the Apps Script project is limited to the one spreadsheet you opened, saving a count fails with:
+
+`Specified permissions are not sufficient to call SpreadsheetApp.openById`
+
+That limit shows up when the project has `@OnlyCurrentDoc`, or when `appsscript.json` does not list the spreadsheet scope. Do not add `@OnlyCurrentDoc` to `Code.gs`.
+
+1. In the Apps Script left sidebar, click the gear icon (**Project Settings**).
+2. Turn on **Show "appsscript.json" manifest file in editor**.
+3. Go back to the editor and open `appsscript.json`.
+4. Add an `oauthScopes` list. Keep the lines Google already put in the file (`timeZone`, `exceptionLogging`, `runtimeVersion`). If `oauthScopes` is already there, replace that list with this one.
+
+```json
+"oauthScopes": [
+  "https://www.googleapis.com/auth/spreadsheets",
+  "https://www.googleapis.com/auth/script.external_request",
+  "https://www.googleapis.com/auth/drive.readonly"
+]
+```
+
+The first scope is the one that fixes the `openById` error. The second is the external-request scope the web app needs. The third lets the script find next year's inventory file in the Fun Zone Information folder. Once this list is set, Apps Script will not add scopes on its own, so leave all three in place.
+
+5. Save `appsscript.json`.
+
+A full file, if yours is almost empty, looks like this:
+
+```json
+{
+  "timeZone": "America/Chicago",
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/script.external_request",
+    "https://www.googleapis.com/auth/drive.readonly"
+  ]
+}
+```
+
 ## 2. Choose a PIN
 
 1. In the Apps Script left sidebar, click the gear icon (**Project Settings**).
@@ -61,7 +101,7 @@ Leave the deployment as **Anyone**. "Anyone with a Google account" will pop a si
 6. Tap **Save on this phone**.
 7. Tap **Test connection**. It should say it is connected.
 
-Testing the connection does not change the spreadsheet. The first time someone picks Wentzville or Cottleville, the script looks for this month's tab (right now that is `WPR - Oct 2026` or `CPR - Oct 2026`). If that tab is missing, it copies the latest older tab for that store, renames it, and clears the count cells. Names, ticket values, pieces per ounce, position codes, full-bin counts, and formulas stay.
+Testing the connection does not change the spreadsheet. The first time someone picks Wentzville or Cottleville, the script looks for this month's tab (right now that is `WPR - Oct 2026` or `CPR - Oct 2026`). If that tab is missing, it copies the latest older tab for that store and renames the copy. On the copy only, it clears plain numbers in pounds (F), ounces (G), Front (J), Back (K), Break Room (L), and bins (U), from row 2 down through the last row. It does not change September. It does not clear a cell that contains a formula, and it leaves names, ticket values, pieces per ounce, position codes, full-bin counts, and the other columns as they were.
 
 Do this on each store phone. The link and PIN are saved on that phone only.
 
@@ -76,6 +116,34 @@ You can instead paste the web app URL into `js/config.js` and publish the site a
 5. Turn the three switches off when you want real counts to save.
 
 Each switch is separate. You can block new products and still save counts.
+
+## Update the script so a new month starts blank
+
+Copying September into October was keeping September's counts. Front, Back, and Break Room still showed last month's numbers. The script now clears those counts on the new tab only. The website update is already live. The script on Google is a separate paste, and it is still the old one until you do this.
+
+1. Open **FunZone Inventory 2026**.
+2. Click **Extensions**, then **Apps Script**.
+3. Click into `Code.gs`, select all, and delete it.
+4. On GitHub, open `apps-script/Code.gs` on `main`, click **Raw**, and copy the whole file.
+5. Paste it into the script editor and click the save icon.
+6. Open `appsscript.json` and confirm the `oauthScopes` list from **Let the script open both spreadsheets** is still there. Add it if it is missing. Save.
+7. Click **Deploy**, then **Manage deployments**.
+8. Click the pencil on the web app.
+9. Set Version to **New version**.
+10. Click **Deploy**.
+11. If Google asks you to authorize again, allow it.
+
+The web app link and the PIN stay the same. Phones do not need a new link.
+
+This does not edit a tab that is already there, and it does not edit September. `CPR - Oct 2026` was already created with September's counts still in it. Wentzville's October tab needs the same check if it was created the same way.
+
+If that October tab does not have real October counts yet:
+
+1. Open **FunZone Inventory 2026**.
+2. Right-click the October tab (`CPR - Oct 2026` or `WPR - Oct 2026`) and click **Delete**. Do not delete September.
+3. On a phone, open the app and pick that store. The script copies September again and leaves F, G, J, K, L, and U blank.
+
+If staff have already entered real October counts on that tab, do not delete it. Clear the leftover September numbers yourself in columns F, G, J, K, L, and U. Leave any cell in those columns that contains a formula, and leave every other column alone.
 
 ## Update the script before staff weigh a new item
 
@@ -125,7 +193,7 @@ This is the behavior to confirm. The app never types over a cell that already co
 - **Undo** takes back the amount this phone just sent for that line, unless Testing mode is blocking count saves.
 - **Start a new session** only clears the list on the phone. It does not remove anything from the sheet.
 - **New products** get a new row: column A is the name, column B is the ticket value, and the total formulas are copied so the row still adds up. Pieces per ounce (column D) and the full-bin count (column T) are left blank, because the app does not know them yet. Fill those in on the sheet when you know them.
-- **A new month tab** keeps names, ticket values, pieces per ounce, position codes, full-bin counts, and formulas. It clears the count inputs: pounds, ounces, column I, Front, Back, Break Room, the bin quarters, the checkbox, and "Count is off by" when that cell is not a formula.
+- **A new month tab** keeps names, ticket values, pieces per ounce, position codes, full-bin counts, formulas, and every column except the count inputs. On the new tab only, plain values in F, G, J, K, L, and U are cleared from row 2 through the last row. A formula in one of those cells is left as it is. Column I, the checkbox, and "Count is off by" are not cleared. The previous month's tab is not changed. A tab that already exists (including an October tab created before this fix) is not cleared again.
 - **Column D** is used the same way the sheet's own weight formula uses it: pieces per ounce. The column header says it can also mean per box. Weight counts follow the formula.
 - **Barcodes** stay as text so a leading zero is not dropped. Teaching the app a barcode fills in that store's name on the existing row, or adds a row if the barcode is new. The other store's name is left as it is.
 - Counts made while **Don't save counts** is on are not sent later, even if you turn the switch off. They stay in the on-screen list only. Editing that line after the switch is off will send the edited amount.

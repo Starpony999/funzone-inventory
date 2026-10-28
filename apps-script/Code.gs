@@ -11,7 +11,9 @@
  * js/sheetmap.js mapCountOntoRow. That function is the one place that
  * decides which cells a count changes.
  *
- * This script never fills in a cell that already has a formula.
+ * Count columns (F, G, J, K, L, U) can replace a plain number or hand math
+ * such as =72*2-12. A formula that names a cell or a function is left alone.
+ * Column D is never replaced when it already has a formula.
  *
  * Do not add @OnlyCurrentDoc. This script opens the inventory file and the
  * barcodes file by id. If the project is limited to the current spreadsheet,
@@ -209,7 +211,16 @@ function ensureMonth_(ss, store) {
   return copy;
 }
 
-// True where a count-input cell on the source tab is a formula.
+// True when a count formula names a cell or a function and must be kept.
+// Same test as keepsCountFormula in js/sheetmap.js. Hand math has no letters
+// after "=" (=72*2-12, =6*12-1, =(7*4+7+36)*12, =100+1200) and is not kept.
+function keepsCountFormula_(formula) {
+  var text = String(formula || "").replace(/^\s+|\s+$/g, "");
+  if (!text || text.charAt(0) !== "=") return false;
+  return /[A-Za-z]/.test(text.substring(1));
+}
+
+// True where a count-input cell on the source tab must be kept.
 // Index i of the result matches CLEAR_COLS[i]. Row 0 of each mask is sheet row 2.
 function countInputFormulaMask_(sheet, lastRow) {
   var masks = [];
@@ -218,15 +229,16 @@ function countInputFormulaMask_(sheet, lastRow) {
     var mask = [];
     if (height >= 1 && CLEAR_COLS[i] <= sheet.getMaxColumns()) {
       var formulas = sheet.getRange(2, CLEAR_COLS[i], height, 1).getFormulas();
-      for (var r = 0; r < formulas.length; r++) mask.push(formulas[r][0] ? true : false);
+      for (var r = 0; r < formulas.length; r++) mask.push(keepsCountFormula_(formulas[r][0]));
     }
     masks.push(mask);
   }
   return masks;
 }
 
-// Blank plain values in F, G, J, K, L, and U on the copied tab only.
-// masks come from the previous tab. A true entry is a formula and is not cleared.
+// Blank plain values and hand-math formulas in F, G, J, K, L, and U on the
+// copied tab only. masks come from the previous tab. A true entry names a
+// cell or a function and is not cleared.
 // Same run rules as plainCountRuns in js/sheetmap.js.
 function clearPlainCountInputs_(sheet, masks) {
   for (var i = 0; i < CLEAR_COLS.length; i++) {
@@ -377,9 +389,9 @@ function mapCountOntoRow_(sheet, row, section, delta) {
     var gFormula = sheet.getRange(row, 7).getFormula();
     var fRaw = sheet.getRange(row, 6).getValue();
     var gRaw = sheet.getRange(row, 7).getValue();
-    if (fFormula || gFormula) {
-      if (fFormula) skipped.push({ column: "F", reason: "formula" });
-      if (gFormula) skipped.push({ column: "G", reason: "formula" });
+    if (keepsCountFormula_(fFormula) || keepsCountFormula_(gFormula)) {
+      if (keepsCountFormula_(fFormula)) skipped.push({ column: "F", reason: "formula" });
+      if (keepsCountFormula_(gFormula)) skipped.push({ column: "G", reason: "formula" });
     } else if (typeof fRaw === "boolean" || typeof gRaw === "boolean") {
       if (typeof fRaw === "boolean") skipped.push({ column: "F", reason: "not a number" });
       if (typeof gRaw === "boolean") skipped.push({ column: "G", reason: "not a number" });
@@ -400,7 +412,7 @@ function mapCountOntoRow_(sheet, row, section, delta) {
 function writeAddedNumber_(sheet, row, col, delta, updates, skipped) {
   var letter = columnLetter_(col);
   var range = sheet.getRange(row, col);
-  if (range.getFormula()) {
+  if (keepsCountFormula_(range.getFormula())) {
     skipped.push({ column: letter, reason: "formula" });
     return;
   }

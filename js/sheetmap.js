@@ -7,7 +7,9 @@
  *
  * Columns we may write: F, G, J, K, L, U.
  * Columns we never write: A–E, H, I, M, N, and the position / full-count columns.
- * A cell that already contains a formula is left alone.
+ * A count cell is left alone only when its formula refers to another cell or
+ * uses a function (the formula text contains a letter). Hand math such as
+ * =72*2-12 is a count and can be replaced.
  */
 
 export const SECTION_COLUMN = {
@@ -85,8 +87,9 @@ export const MONTH_RESET_COLUMNS = ["F", "G", "J", "K", "L", "U"];
 
 // Use this month's tab when it exists. Otherwise duplicate the latest older
 // tab for that store. Spares tabs and other names are ignored.
-// ensureMonth_ in apps-script/Code.gs then blanks plain values in
-// MONTH_RESET_COLUMNS on the copy only. Formula cells in those columns stay.
+// ensureMonth_ in apps-script/Code.gs then blanks plain values and hand-math
+// formulas in MONTH_RESET_COLUMNS on the copy only. A formula that names a
+// cell or a function stays. The previous month's tab is not edited.
 export function pickMonthTab(store, tabNames, date) {
   const wanted = monthTabName(store, date);
   const parsed = (tabNames || [])
@@ -106,7 +109,8 @@ export function pickMonthTab(store, tabNames, date) {
 
 /**
  * Contiguous row runs to blank in one count column after a month tab is copied.
- * formulaMask[i] is true when sheet row (i + 2) is a formula and must be kept.
+ * formulaMask[i] is true when sheet row (i + 2) has a cell or function formula
+ * and must be kept. Hand math (=72*2-12) is false and is cleared.
  * Every other cell from row 2 through the last row is included, blanks too,
  * so the sheet can clear a whole run in one call without touching a formula.
  * An empty mask clears nothing (the copy was not measured yet).
@@ -172,11 +176,28 @@ export function countSheetDelta(entry, baseline) {
   };
 }
 
+// Keep a count formula only when it refers to a cell, a range, or a function.
+// After the "=", a letter means that. Hand math is only digits, spaces,
+// decimal points, and + - * / ( ). Those are counts, not sheet logic.
+// keepsCountFormula_ in apps-script/Code.gs is the same test.
+export function keepsCountFormula(formula) {
+  const text = String(formula || "").trim();
+  if (!text.startsWith("=")) return false;
+  return /[A-Za-z]/.test(text.slice(1));
+}
+
 function cellInfo(row, column) {
   const cell = row ? row[column] : null;
   if (cell == null || cell === "") return { value: null, formula: false };
   if (typeof cell === "object" && ("value" in cell || "formula" in cell)) {
-    return { value: cell.value ?? null, formula: !!cell.formula };
+    const mark = cell.formula;
+    const formula = mark === true
+      ? true
+      : typeof mark === "string" && keepsCountFormula(mark);
+    return { value: cell.value ?? null, formula: !!formula };
+  }
+  if (typeof cell === "string" && cell.startsWith("=")) {
+    return { value: null, formula: keepsCountFormula(cell) };
   }
   return { value: cell, formula: false };
 }

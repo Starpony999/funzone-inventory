@@ -101,7 +101,7 @@ Leave the deployment as **Anyone**. "Anyone with a Google account" will pop a si
 6. Tap **Save on this phone**.
 7. Tap **Test connection**. It should say it is connected.
 
-Testing the connection does not change the spreadsheet. The first time someone picks Wentzville or Cottleville, the script looks for this month's tab (right now that is `WPR - Oct 2026` or `CPR - Oct 2026`). If that tab is missing, it copies the latest older tab for that store and renames the copy. On the copy only, it clears plain numbers in pounds (F), ounces (G), Front (J), Back (K), Break Room (L), and bins (U), from row 2 down through the last row. It does not change September. It does not clear a cell that contains a formula, and it leaves names, ticket values, pieces per ounce, position codes, full-bin counts, and the other columns as they were.
+Testing the connection does not change the spreadsheet. The first time someone picks Wentzville or Cottleville, the script looks for this month's tab (right now that is `WPR - Oct 2026` or `CPR - Oct 2026`). If that tab is missing, it copies the latest older tab for that store and renames the copy. On the copy only, it clears pounds (F), ounces (G), Front (J), Back (K), Break Room (L), and bins (U), from row 2 down through the last row. That includes plain numbers and hand math such as `=72*2-12`. It does not change September. It leaves a formula that names another cell or uses a function, such as `=J2` or `=SUM(J2:L2)`. Names, ticket values, pieces per ounce, position codes, full-bin counts, and the other columns stay as they were.
 
 Do this on each store phone. The link and PIN are saved on that phone only.
 
@@ -119,7 +119,7 @@ Each switch is separate. You can block new products and still save counts.
 
 ## Update the script so a new month starts blank
 
-Copying September into October was keeping September's counts. Front, Back, and Break Room still showed last month's numbers. The script now clears those counts on the new tab only. The website update is already live. The script on Google is a separate paste, and it is still the old one until you do this.
+Copying September into October was keeping September's counts. On Cottleville, Back still had hand math such as `=72*2-12`, `=6*12-1`, and `=100+1200`. Those are formulas, so the first clear left them. The script now clears that hand math on the new tab, and a new count can replace the same kind of cell on the current tab. A formula that names another cell, such as `=J2` or `=SUM(J2:L2)`, is still left alone. The script on Google is a separate paste. Paste this version even if you already pasted an earlier one.
 
 1. Open **FunZone Inventory 2026**.
 2. Click **Extensions**, then **Apps Script**.
@@ -143,7 +143,9 @@ If that October tab does not have real October counts yet:
 2. Right-click the October tab (`CPR - Oct 2026` or `WPR - Oct 2026`) and click **Delete**. Do not delete September.
 3. On a phone, open the app and pick that store. The script copies September again and leaves F, G, J, K, L, and U blank.
 
-If staff have already entered real October counts on that tab, do not delete it. Clear the leftover September numbers yourself in columns F, G, J, K, L, and U. Leave any cell in those columns that contains a formula, and leave every other column alone.
+Do that only after this new script is deployed. If you delete the tab first, the old script copies the hand math again.
+
+If staff have already entered real October counts on that tab, do not delete it. Clear the leftover September numbers yourself in columns F, G, J, K, L, and U, including cells that show a formula made only of numbers and + − × ÷. Leave a formula that mentions another cell, and leave every other column alone.
 
 ## Update the script before staff weigh a new item
 
@@ -183,7 +185,7 @@ You do not edit the app. In January it will find the new file and, the first tim
 
 ## How a count lands on the sheet
 
-This is the behavior to confirm. The app never types over a cell that already contains a formula (the gray cells that calculate totals).
+This is the behavior to confirm. The app does not type over a formula that names another cell or uses a function (the gray cells that calculate totals). Hand math in a count cell, such as `=72*2-12`, is treated as the count that is already there.
 
 - **Pieces** are added to the section column. Front is column J, Back is column K, Break Room is column L. A second count of the same item adds to the number already there. Column I ("How many in front") is not used. On the 2026 sheets, front counts are already in J, and the total formula still includes whatever is in I.
 - **Weight** always goes in columns F and G (pounds and ounces), even if you weighed some in Front and some in Back. The sheet only has one weight pair per product. The app adds the ounces together, then splits them back into pounds and ounces. It does not also put those pieces in J, K, or L, because column H already turns the weight into pieces and that would count them twice.
@@ -193,9 +195,9 @@ This is the behavior to confirm. The app never types over a cell that already co
 - **Undo** takes back the amount this phone just sent for that line, unless Testing mode is blocking count saves.
 - **Start a new session** only clears the list on the phone. It does not remove anything from the sheet.
 - **New products** get a new row: column A is the name, column B is the ticket value, and the total formulas are copied so the row still adds up. Pieces per ounce (column D) and the full-bin count (column T) are left blank, because the app does not know them yet. Fill those in on the sheet when you know them.
-- **A new month tab** keeps names, ticket values, pieces per ounce, position codes, full-bin counts, formulas, and every column except the count inputs. On the new tab only, plain values in F, G, J, K, L, and U are cleared from row 2 through the last row. A formula in one of those cells is left as it is. Column I, the checkbox, and "Count is off by" are not cleared. The previous month's tab is not changed. A tab that already exists (including an October tab created before this fix) is not cleared again.
+- **A new month tab** keeps names, ticket values, pieces per ounce, position codes, full-bin counts, total formulas, and every column except the count inputs. On the new tab only, F, G, J, K, L, and U are cleared from row 2 through the last row. Plain numbers are cleared. So is hand math whose formula, after the `=`, is only digits, spaces, decimal points, and `+ - * / ( )`, such as `=72*2-12` or `=(7*4+7+36)*12`. A formula that contains a letter, because it names a cell or a function, is left as it is. Column I, the checkbox, and "Count is off by" are not cleared. The previous month's tab is not changed. A tab that already exists (including an October tab created before this fix) is not cleared again.
 - **Column D** is used the same way the sheet's own weight formula uses it: pieces per ounce. The column header says it can also mean per box. Weight counts follow the formula.
 - **Barcodes** stay as text so a leading zero is not dropped. Teaching the app a barcode fills in that store's name on the existing row, or adds a row if the barcode is new. The other store's name is left as it is.
 - Counts made while **Don't save counts** is on are not sent later, even if you turn the switch off. They stay in the on-screen list only. Editing that line after the switch is off will send the edited amount.
 
-If a count cell is a formula, the app leaves it alone and says so on the phone.
+If a count cell's formula names another cell or uses a function, the app leaves it alone and says so on the phone. Hand math in that cell is replaced by the new count.

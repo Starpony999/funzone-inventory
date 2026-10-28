@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  keepsCountFormula,
   mapCountOntoRow,
   monthTabName,
   parseMonthTab,
@@ -148,13 +149,23 @@ describe("mapCountOntoRow", () => {
     assert.deepEqual(room.updates, { L: 2 });
   });
 
-  test("a formula in the section cell is not overwritten", () => {
+  test("a cell-reference formula is not overwritten", () => {
     const mapped = mapCountOntoRow(
       { kind: "count", section: "Back", count: 5 },
-      { K: { value: 132, formula: true } },
+      { K: { value: 132, formula: "=SUM(K2:K3)" } },
     );
     assert.deepEqual(mapped.updates, {});
     assert.deepEqual(mapped.skipped, [{ column: "K", reason: "formula" }]);
+    assert.equal(keepsCountFormula("=J2+1"), true);
+  });
+
+  test("hand math in a count cell is replaced by the new count", () => {
+    const mapped = mapCountOntoRow(
+      { kind: "count", section: "Back", count: 5 },
+      { K: { value: 132, formula: "=72*2-12" } },
+    );
+    assert.deepEqual(mapped.updates, { K: 137 });
+    assert.deepEqual(mapped.skipped, []);
   });
 
   test("weight from every section adds into the one lb/oz pair", () => {
@@ -168,13 +179,21 @@ describe("mapCountOntoRow", () => {
     onlyCountColumns(second.updates);
   });
 
-  test("weight is skipped when pounds or ounces is a formula", () => {
+  test("weight is skipped when pounds or ounces is a cell formula", () => {
     const mapped = mapCountOntoRow(
       { kind: "weight", section: "Front", lb: 1, oz: 0 },
-      { F: { value: 1, formula: true }, G: 0 },
+      { F: { value: 1, formula: "=E2" }, G: 0 },
     );
     assert.deepEqual(mapped.updates, {});
     assert.equal(mapped.skipped[0].column, "F");
+  });
+
+  test("weight replaces hand math in pounds", () => {
+    const mapped = mapCountOntoRow(
+      { kind: "weight", section: "Front", lb: 1, oz: 0 },
+      { F: { value: 3, formula: "=1+2" }, G: 0 },
+    );
+    assert.deepEqual(mapped.updates, { F: 4, G: 0 });
   });
 
   test("bins are total quarters, including Cottleville's second bin", () => {

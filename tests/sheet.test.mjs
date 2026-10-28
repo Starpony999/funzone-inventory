@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, test } from "node:test";
+import { keepsCountFormula, mapCountOntoRow } from "../js/sheetmap.js";
 import {
   addItem,
   CATALOG_STALE_MS,
@@ -299,5 +301,67 @@ describe("testing mode", { concurrency: false }, () => {
     await whenSheetIdle();
     assert.equal(calls.length, 0);
     assert.equal(getCounts()[0].count, 3);
+  });
+});
+
+describe("hand-typed count formulas", () => {
+  const hand = ["=72*2-12", "=6*12-1", "=(7*4+7+36)*12", "=100+1200", "= 72 * 2 - 12", "=1.5*2"];
+  const kept = ["=J2", "=K2+1", "=SUM(J2:L2)", "=ROUND(T2*(U2/4),0)", "=$K$2", "=(F2*16)+G2"];
+
+  test("arithmetic-only formulas are counts, and a letter means keep the formula", () => {
+    for (const formula of hand) {
+      const body = formula.trim().slice(1);
+      assert.match(body, /^[\d\s.+\-*/()]+$/);
+      assert.equal(keepsCountFormula(formula), false, formula);
+    }
+    for (const formula of kept) {
+      assert.equal(/[A-Za-z]/.test(formula.slice(1)), true);
+      assert.equal(keepsCountFormula(formula), true, formula);
+    }
+    assert.equal(keepsCountFormula(""), false);
+    assert.equal(keepsCountFormula("132"), false);
+  });
+
+  test("a new count overwrites =72*2-12 and leaves a cell reference alone", () => {
+    const handMath = mapCountOntoRow(
+      { kind: "count", section: "Back", count: 5 },
+      { K: { value: 132, formula: "=72*2-12" } },
+    );
+    assert.deepEqual(handMath.updates, { K: 137 });
+    assert.deepEqual(handMath.skipped, []);
+
+    const reference = mapCountOntoRow(
+      { kind: "count", section: "Back", count: 5 },
+      { K: { value: 132, formula: "=J2+K2" } },
+    );
+    assert.deepEqual(reference.updates, {});
+    assert.deepEqual(reference.skipped, [{ column: "K", reason: "formula" }]);
+
+    const bins = mapCountOntoRow(
+      { kind: "bin", q1: 4 },
+      { U: { value: 4, formula: "=100+1200" } },
+      { pieces: 0, ounces: 0, quarters: 4 },
+    );
+    assert.equal(bins.updates.U, 8);
+    const protectedBin = mapCountOntoRow(
+      { kind: "bin", q1: 4 },
+      { U: { value: 4, formula: "=ROUND(T2*(U2/4),0)" } },
+      { pieces: 0, ounces: 0, quarters: 4 },
+    );
+    assert.equal(protectedBin.updates.U, undefined);
+    assert.equal(protectedBin.skipped[0].column, "U");
+  });
+
+  test("the Apps Script copy keeps the same cells on a new month and on a saved count", () => {
+    const src = readFileSync(new URL("../apps-script/Code.gs", import.meta.url), "utf8");
+    const rule = src.slice(src.indexOf("function keepsCountFormula_"), src.indexOf("function countInputFormulaMask_"));
+    assert.match(rule, /\[A-Za-z\]/);
+    const mask = src.slice(src.indexOf("function countInputFormulaMask_"), src.indexOf("function clearPlainCountInputs_"));
+    assert.match(mask, /keepsCountFormula_/);
+    const save = src.slice(src.indexOf("function mapCountOntoRow_"), src.indexOf("function numberOrZero_"));
+    assert.match(save, /keepsCountFormula_\(fFormula\)/);
+    assert.match(save, /keepsCountFormula_\(range\.getFormula\(\)\)/);
+    assert.equal(save.includes("if (range.getFormula())"), false);
+    assert.equal(save.includes("if (fFormula || gFormula)"), false);
   });
 });

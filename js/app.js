@@ -14,7 +14,7 @@ import {
   catalogNeedsRefresh,
   getConnection,
   getItems,
-  getPackSize,
+  getPack,
   getPrefs,
   getSheetStatus,
   getTesting,
@@ -68,6 +68,7 @@ const state = {
   oz: "",
   weightField: "lb",
   q1: 0,
+  packUnit: "box",
   countInstead: false,
   measure: "",
   measureInput: "",
@@ -134,7 +135,8 @@ function packSize() {
 
 function packWord() {
   const named = namedPack();
-  return named ? named.word : "box";
+  if (named) return named.word;
+  return state.packUnit === "bag" ? "bag" : "box";
 }
 
 function filteredItems() {
@@ -534,7 +536,12 @@ function countScreen() {
     ? (nBoxes > 0 && size > 0) || nLoose > 0 || state.loose === "0"
     : state.loose !== "";
   const perField = !named && using
-    ? `<div style="margin-bottom:10px">${fieldButton(state.countField === "per", state.per, "How many in a box", "per")}</div>`
+    ? `
+      <div class="unit-row" role="group" aria-label="Box or bag">
+        <button type="button" class="btn ${state.packUnit === "bag" ? "" : "selected"}" data-action="pack-unit" data-unit="box" aria-pressed="${state.packUnit === "bag" ? "false" : "true"}">Box</button>
+        <button type="button" class="btn ${state.packUnit === "bag" ? "selected" : ""}" data-action="pack-unit" data-unit="bag" aria-pressed="${state.packUnit === "bag" ? "true" : "false"}">Bag</button>
+      </div>
+      ${fieldButton(state.countField === "per", state.per, "How many in a pack", "per")}`
     : "";
   const editor = using
     ? `
@@ -547,7 +554,7 @@ function countScreen() {
     : `
       <div class="muted">How many pieces?</div>
       <div class="figure">${esc(state.loose || "0")}</div>
-      <div class="center"><button class="btn link" data-action="use-boxes">Counting boxes?</button></div>`;
+      <div class="center"><button class="btn link" data-action="use-boxes">Counting packs?</button></div>`;
   return `
     ${backButton("Back")}
     ${itemBanner()}
@@ -977,12 +984,17 @@ function savePer10() {
 function startCount() {
   resetEntry();
   const named = namedPack();
-  const custom = state.store && state.item ? getPackSize(state.store, state.item.name) : null;
-  if (named) state.countField = "boxes";
-  else if (custom) {
-    state.per = String(custom);
+  const custom = state.store && state.item ? getPack(state.store, state.item.name) : null;
+  if (named) {
+    state.packUnit = named.word === "bag" ? "bag" : "box";
+    state.countField = "boxes";
+  } else if (custom) {
+    state.per = String(custom.size);
+    state.packUnit = custom.unit;
     state.showBoxes = true;
     state.countField = "boxes";
+  } else {
+    state.packUnit = "box";
   }
   state.screen = "count";
   render();
@@ -1085,7 +1097,9 @@ function countPayload(count, extra) {
   const nBoxes = Number(state.boxes || 0);
   const nLoose = Number(state.loose || 0);
   const packed = usingBoxes() && nBoxes > 0 && size > 0;
-  if (packed && !namedPack() && state.store && state.item) savePackSize(state.store, state.item.name, size);
+  if (packed && !namedPack() && state.store && state.item) {
+    savePackSize(state.store, state.item.name, size, packWord());
+  }
   return {
     kind: "count",
     count,
@@ -1206,6 +1220,7 @@ function startEdit(id) {
   resetEntry();
   if (entry.kind === "count") {
     state.countInstead = entry.frontFull === true || entry.frontFull === false;
+    if (entry.packWord === "bag" || entry.packWord === "box") state.packUnit = entry.packWord;
     const named = parsePack(state.item.name);
     state.loose = entry.loose !== undefined && entry.loose !== null ? String(entry.loose) : String(entry.count ?? "");
     if (entry.boxes) state.boxes = String(entry.boxes);
@@ -1380,6 +1395,11 @@ function onClick(event) {
     case "use-boxes":
       state.showBoxes = true;
       state.countField = "per";
+      if (state.packUnit !== "bag") state.packUnit = "box";
+      render();
+      break;
+    case "pack-unit":
+      state.packUnit = button.dataset.unit === "bag" ? "bag" : "box";
       render();
       break;
     case "save-count":

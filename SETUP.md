@@ -153,6 +153,8 @@ The barcodes spreadsheet has a tab named **Bin Items**. Column A is a short name
 
 Paste `apps-script/Code.gs` and deploy a **New version** before staff use this. The phone cannot read the Bin Items tab until that version is published. The link and PIN stay the same.
 
+When a product name does not say how many pieces are in a pack, staff can enter that number and choose **Box** or **Bag**. The phone remembers it. It is also saved on a tab named **Pack Sizes** in the barcodes spreadsheet, with columns Store, Item, Size, and Unit. The product name on the month tab is not changed. The script creates that tab the first time someone saves a pack size, if it is not there yet. **Don't save new items** keeps the choice on the phone and does not write the tab.
+
 ## Update the script before staff weigh a new item
 
 The app now asks "How many pieces equal 10 oz?" when an item has no pieces-per-ounce, then writes that into column D. The script on Google has to be the new one or column D stays blank.

@@ -307,6 +307,10 @@ try {
   await click(page, '[data-action="kind-count"]');
   await see(page, "How many pieces?");
   await click(page, '[data-action="use-boxes"]');
+  await see(page, "How many in a pack");
+  await click(page, '[data-action="pack-unit"][data-unit="bag"]');
+  await see(page, "Full bags");
+  await page.screenshot({ path: `${outDir}/26-pack-bag.png` });
   await pad(page, ["6"]);
   await click(page, '[data-action="field"][data-field="boxes"]');
   await pad(page, ["2"]);
@@ -315,11 +319,13 @@ try {
   await see(page, "13 pcs");
   await click(page, '[data-action="save-count"]');
   await see(page, "13 pcs");
+  await see(page, "2 bags");
   await click(page, '[data-action="scan-next"]');
   await page.type("#typed", "028400090896");
   await click(page, '[data-action="lookup"]');
   await click(page, '[data-action="kind-count"]');
-  await see(page, "How many in a box");
+  await see(page, "How many in a pack");
+  await see(page, "Full bags");
   const remembered = await page.$$eval(".field .num", (els) => els.map((el) => el.textContent.trim()));
   assert.equal(remembered[0], "6");
 

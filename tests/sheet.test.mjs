@@ -18,6 +18,7 @@ import {
   resetLocalData,
   saveBarcode,
   saveCount,
+  savePackSize,
   savePiecesPer10,
   searchCatalog,
   setSheetClient,
@@ -302,6 +303,21 @@ describe("testing mode", { concurrency: false }, () => {
     assert.equal(calls.length, 0);
     assert.equal(getCounts()[0].count, 3);
   });
+
+  test("Don't save new items keeps a pack size on the phone", async () => {
+    const calls = recordingClient();
+    setTesting({ skipItems: true });
+    assert.deepEqual(savePackSize("WPR", "Samurai Sword", 48, "bag"), { size: 48, unit: "bag" });
+    await whenSheetIdle();
+    assert.equal(calls.some((call) => call.action === "savePackSize"), false);
+    setTesting({ skipItems: false });
+    savePackSize("WPR", "Samurai Sword", 48, "bag");
+    await whenSheetIdle();
+    const sent = calls.filter((call) => call.action === "savePackSize");
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].size, 48);
+    assert.equal(sent[0].unit, "bag");
+  });
 });
 
 describe("hand-typed count formulas", () => {
@@ -378,5 +394,8 @@ describe("bin item sheet", () => {
     const measure = src.slice(src.indexOf("function saveMeasure_"), src.indexOf("function readBarcodes_"));
     assert.match(measure, /getFormula\(\)/);
     assert.match(src, /allowNegative/);
+    assert.match(src, /getSheetByName\("Pack Sizes"\)/);
+    assert.match(src, /packSizes: readPackSizes_\(\)/);
+    assert.match(src, /action === "savePackSize"/);
   });
 });

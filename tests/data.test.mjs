@@ -13,6 +13,7 @@ import {
   addItem,
   getCounts,
   getItems,
+  getPack,
   getPackSize,
   getPendingSheetRows,
   itemMatchesQuery,
@@ -342,5 +343,8 @@ describe("local session", { concurrency: false }, () => {
     assert.equal(getCounts().length, 0);
     assert.equal(lookupBarcode("12345670", "WPR").item.name, "Samurai Sword");
     assert.equal(getPackSize("WPR", "Samurai Sword"), 6);
+    assert.deepEqual(getPack("WPR", "Samurai Sword"), { size: 6, unit: "box" });
+    assert.deepEqual(savePackSize("CPR", "flarp Noise Putty", 48, "bag"), { size: 48, unit: "bag" });
+    assert.deepEqual(getPack("CPR", "flarp Noise Putty"), { size: 48, unit: "bag" });
   });
 });

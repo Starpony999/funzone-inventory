@@ -378,6 +378,7 @@ function jobKey(job) {
   if (job.action === "saveFullBin" || job.action === "saveFrontCount") {
     return "measure:" + job.action + ":" + job.store + ":" + job.item;
   }
+  if (job.action === "savePackSize") return "pack:" + job.store + ":" + job.item;
   return "job:" + job.id;
 }
 
@@ -563,6 +564,10 @@ function enqueue(job) {
     if (existing) {
       if (job.action === "savePerOz") existing.piecesPer10 = job.piecesPer10;
       if (job.action === "saveFullBin" || job.action === "saveFrontCount") existing.pieces = job.pieces;
+      if (job.action === "savePackSize") {
+        existing.size = job.size;
+        existing.unit = job.unit;
+      }
       writeOutbox(box);
       schedulePump();
       return;
@@ -658,6 +663,7 @@ async function refreshStoreNow(store) {
     applyCatalog(store, data);
     if (Array.isArray(data.barcodes)) applyBarcodes(data.barcodes);
     if (Array.isArray(data.binItems)) applyBinItems(data.binItems);
+    if (Array.isArray(data.packSizes)) applyPackSizes(data.packSizes);
     setSheetStatus({ error: "", message: "", tab: data.tab || "", okAt: Date.now() });
     queueUnsynced();
     await whenSheetIdle();
@@ -1266,14 +1272,55 @@ export function clearSession() {
   writeJSON(KEYS.session, session);
 }
 
-export function getPackSize(store, itemName) {
-  const size = readPacks()[store + ":" + itemName];
-  return Number.isFinite(size) && size > 0 ? size : null;
+export function getPack(store, itemName) {
+  const value = readPacks()[store + ":" + itemName];
+  if (typeof value === "number" && value > 0) return { size: value, unit: "box" };
+  if (value && typeof value === "object") {
+    const size = Number(value.size);
+    if (size > 0) return { size, unit: value.unit === "bag" ? "bag" : "box" };
+  }
+  return null;
 }
 
-export function savePackSize(store, itemName, size) {
+export function getPackSize(store, itemName) {
+  const pack = getPack(store, itemName);
+  return pack ? pack.size : null;
+}
+
+// Remember how many pieces are in one pack, and whether that pack is a box or a bag.
+// Written to the Pack Sizes tab unless Testing mode is blocking new-item saves.
+export function savePackSize(store, itemName, size, unit) {
+  const name = String(itemName || "").trim();
+  const count = typeof size === "number" ? size : Number(size);
+  if (!name || (store !== "WPR" && store !== "CPR")) return null;
+  if (!Number.isSafeInteger(count) || count <= 0) return null;
+  const word = unit === "bag" ? "bag" : "box";
   const packs = readPacks();
-  packs[store + ":" + itemName] = size;
+  packs[store + ":" + name] = { size: count, unit: word };
+  mem.packs = packs;
+  writeJSON(KEYS.packs, packs);
+  if (sheetEnabled() && !getTesting().skipItems) {
+    enqueue({
+      action: "savePackSize",
+      store,
+      item: name,
+      size: count,
+      unit: word,
+    });
+  }
+  return { size: count, unit: word };
+}
+
+function applyPackSizes(rows) {
+  const packs = readPacks();
+  for (const row of rows || []) {
+    const store = row && (row.store === "CPR" ? "CPR" : row.store === "WPR" ? "WPR" : "");
+    const name = String(row && row.item || "").trim();
+    const size = Number(row && row.size);
+    if (!store || !name || !size) continue;
+    packs[store + ":" + name] = { size, unit: row.unit === "bag" ? "bag" : "box" };
+  }
+  mem.packs = packs;
   writeJSON(KEYS.packs, packs);
 }
 

@@ -443,7 +443,8 @@ input[type="text"], input[type="search"], input[type="url"], input[type="passwor
 .save { margin-top: 16px; justify-content: center; }
 
 .bins { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-.count-instead { margin-top: 12px; }
+.unit-row { display: flex; gap: 8px; margin: 0 0 10px; }
+.unit-row .btn { flex: 1; min-height: 52px; }
 .bin {
   min-height: 118px;
   flex-direction: column;

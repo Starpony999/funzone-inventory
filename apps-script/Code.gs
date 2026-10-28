@@ -111,6 +111,7 @@ function handle_(body) {
     if (action === "savePerOz") return withLock_(function () { return savePerOz_(body); });
     if (action === "saveFullBin") return withLock_(function () { return saveMeasure_(body, 20); });
     if (action === "saveFrontCount") return withLock_(function () { return saveMeasure_(body, 9); });
+    if (action === "savePackSize") return withLock_(function () { return savePackSize_(body); });
   } catch (err) {
     return { ok: false, error: err.code || "script-error", message: err.message || String(err) };
   }
@@ -278,7 +279,8 @@ function getCatalog_(body) {
     spreadsheet: ss.getName(),
     items: readItems_(sheet),
     barcodes: readBarcodes_(),
-    binItems: readBinItems_()
+    binItems: readBinItems_(),
+    packSizes: readPackSizes_()
   };
 }
 
@@ -369,6 +371,65 @@ function saveMeasure_(body, col) {
   }
   cell.setValue(pieces);
   return { ok: true, pieces: pieces, tab: sheet.getName() };
+}
+
+// Pack size is not part of the item name. It lives on a Pack Sizes tab in the
+// barcodes spreadsheet: Store, Item, Size, Unit. A missing tab is created
+// on the first save. Reading a missing tab returns nothing and does not fail.
+function readPackSizes_() {
+  var ss;
+  try {
+    ss = SpreadsheetApp.openById(BARCODES_ID);
+  } catch (err) {
+    return [];
+  }
+  var sheet = ss.getSheetByName("Pack Sizes");
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    var store = String(values[i][0] || "").replace(/^\s+|\s+$/g, "").toUpperCase();
+    var item = String(values[i][1] || "").replace(/^\s+|\s+$/g, "");
+    var size = Number(values[i][2]);
+    if ((store !== "WPR" && store !== "CPR") || !item || !isFinite(size) || size <= 0) continue;
+    var unit = String(values[i][3] || "").replace(/^\s+|\s+$/g, "").toLowerCase() === "bag" ? "bag" : "box";
+    rows.push({ store: store, item: item, size: size, unit: unit });
+  }
+  return rows;
+}
+
+function savePackSize_(body) {
+  var store = body.store === "CPR" ? "CPR" : body.store === "WPR" ? "WPR" : "";
+  var name = String(body.item || "").replace(/^\s+|\s+$/g, "");
+  var size = Number(body.size);
+  var unit = String(body.unit || "").toLowerCase() === "bag" ? "bag" : "box";
+  if (!store || !name || !isFinite(size) || size <= 0 || Math.round(size) !== size) {
+    return { ok: false, error: "bad-pack", message: "Enter how many pieces are in one pack." };
+  }
+  var ss = SpreadsheetApp.openById(BARCODES_ID);
+  var sheet = ss.getSheetByName("Pack Sizes");
+  if (!sheet) {
+    sheet = ss.insertSheet("Pack Sizes");
+    sheet.getRange(1, 1, 1, 4).setValues([["Store", "Item", "Size", "Unit"]]);
+    sheet.setFrozenRows(1);
+  }
+  var last = sheet.getLastRow();
+  var found = 0;
+  if (last >= 2) {
+    var values = sheet.getRange(2, 1, last - 1, 2).getDisplayValues();
+    var wanted = name.toLowerCase();
+    for (var i = 0; i < values.length; i++) {
+      var rowStore = String(values[i][0] || "").replace(/^\s+|\s+$/g, "").toUpperCase();
+      var rowItem = String(values[i][1] || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+      if (rowStore === store && rowItem === wanted) {
+        found = i + 2;
+        break;
+      }
+    }
+  }
+  var dest = found || Math.max(last, 1) + 1;
+  sheet.getRange(dest, 1, 1, 4).setValues([[store, name, size, unit]]);
+  return { ok: true, row: dest, tab: "Pack Sizes" };
 }
 
 function readBarcodes_() {

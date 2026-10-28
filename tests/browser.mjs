@@ -358,6 +358,20 @@ try {
   await zxingPage.goto(base, { waitUntil: "networkidle0" });
   await zxingPage.click('[data-action="store"][data-store="WPR"]');
   await zxingPage.click('[data-action="section"][data-section="Front"]');
+  await see(zxingPage, "Or search by name or barcode");
+  await zxingPage.type("#typed", "laser spin");
+  await zxingPage.waitForSelector('[data-action="suggest"]');
+  await see(zxingPage, "Laser Spin Top");
+  await zxingPage.screenshot({ path: `${outDir}/21-name-search.png` });
+  await zxingPage.click('[data-action="suggest"]');
+  await see(zxingPage, "How are you counting it?");
+  await see(zxingPage, "Laser Spin Top");
+  await zxingPage.click('[data-action="back"]');
+  await see(zxingPage, "Or search by name or barcode");
+  await zxingPage.click("#typed", { clickCount: 3 });
+  await zxingPage.type("#typed", "zzzz-not-a-product");
+  await see(zxingPage, "No match.");
+  await see(zxingPage, "Add as a new product");
   await zxingPage.click('[data-action="start-camera"]');
   await zxingPage.waitForFunction(() => {
     const engine = document.getElementById("engine");
@@ -366,6 +380,21 @@ try {
   const zxingEngine = await zxingPage.$eval("#engine", (el) => el.textContent);
   assert.match(zxingEngine, /built-in barcode reader/i);
   assert.doesNotMatch(zxingEngine, /phone's built-in/);
+  await see(zxingPage, "Fill the box with the barcode");
+  const zoomOn = await zxingPage.$eval("#zoomRange", (el) => {
+    const wrap = document.getElementById("camWrap");
+    return !!wrap && !wrap.hidden && !el.disabled;
+  });
+  assert.equal(zoomOn, true);
+  await zxingPage.$eval("#zoomRange", (el) => {
+    el.value = "2";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await zxingPage.waitForFunction(() => {
+    const video = document.getElementById("video");
+    return video && video.style.transform.includes("scale(2)");
+  });
+  await zxingPage.screenshot({ path: `${outDir}/22-camera-zoom.png` });
   await zxingPage.click('[data-action="stop-camera"]');
 
   assert.deepEqual(errors, []);

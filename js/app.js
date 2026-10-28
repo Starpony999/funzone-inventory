@@ -17,6 +17,7 @@ import {
   getTesting,
   lookupBarcode,
   parsePack,
+  searchCatalog,
   pieces,
   plural,
   removeCount,
@@ -143,6 +144,7 @@ function render() {
   if (cameraIsOn()) stopCamera();
   app.innerHTML = shell();
   document.body.classList.toggle("modal-open", !!(state.dupDraft || state.confirmClear));
+  if (state.screen === "scan") paintSuggestions();
 }
 
 function statusNote() {
@@ -290,7 +292,7 @@ function sectionScreen() {
 function scanScreen() {
   const secure = window.isSecureContext
     ? ""
-    : `<p class="block-warn">The camera only works on a secure page (https). Type the barcode instead.</p>`;
+    : `<p class="block-warn">The camera only works on a secure page (https). Search by name or barcode instead.</p>`;
   const stripes = BARS.map((width) => `<i style="width:${width * 2}px"></i>`).join("");
   return `
     <div class="finder" id="finder">
@@ -301,18 +303,25 @@ function scanScreen() {
     <div id="camWrap" class="cam" hidden>
       <video id="video" playsinline muted autoplay></video>
       <div class="guide"></div>
+      <div class="cam-tools">
+        <button type="button" id="torchBtn" class="cam-tool" hidden aria-pressed="false">Light</button>
+        <label class="cam-zoom">Zoom
+          <input id="zoomRange" type="range" min="1" max="4" step="0.1" value="1" aria-label="Zoom">
+        </label>
+      </div>
       <div id="flash"></div>
-      <div id="camMsg">Point at the barcode</div>
+      <div id="camMsg">Fill the box with the barcode</div>
     </div>
     <button id="stopBtn" class="btn" data-action="stop-camera" hidden>Stop camera</button>
     <p id="engine" class="engine"></p>
     ${secure}
     <div style="margin-top:18px">
-      <div class="small" style="margin-bottom:6px">Or type the barcode</div>
+      <div class="small" style="margin-bottom:6px">Or search by name or barcode</div>
       <div class="row">
-        <input id="typed" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="e.g. 097138500717" value="${esc(state.typed)}">
+        <input id="typed" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Name or barcode" value="${esc(state.typed)}">
         <button class="btn quiet" data-action="lookup">Look up</button>
       </div>
+      <div id="suggest" class="suggest"></div>
     </div>
     ${sessionList()}`;
 }
@@ -346,7 +355,9 @@ function newNameScreen() {
   return `
     ${backButton("Back")}
     <h1>What's the product called?</h1>
-    <p class="sub">Barcode ${esc(state.pendingCode)} isn't on the ${esc(storeName(state.store))} list yet.</p>
+    <p class="sub">${state.pendingCode
+      ? `Barcode ${esc(state.pendingCode)} isn't on the ${esc(storeName(state.store))} list yet.`
+      : `This name isn't on the ${esc(storeName(state.store))} list yet.`}</p>
     <input id="newName" type="text" autocomplete="off" autocapitalize="words" placeholder="Product name" value="${esc(state.newName)}">
     <div class="stack" style="margin-top:12px">
       ${duplicate}
@@ -358,10 +369,12 @@ function newConfirmScreen() {
   return `
     ${backButton("Go back")}
     <h1>Add this product?</h1>
-    <p class="sub">Check the name and the barcode before it is saved on this phone.</p>
+    <p class="sub">${state.pendingCode
+      ? "Check the name and the barcode before it is saved on this phone."
+      : "Check the name before it is saved on this phone."}</p>
     <div class="card banner">
       <div class="item-name">${esc(state.newName.trim())}</div>
-      <div class="muted" style="margin-top:8px">Barcode ${esc(state.pendingCode)}</div>
+      ${state.pendingCode ? `<div class="muted" style="margin-top:8px">Barcode ${esc(state.pendingCode)}</div>` : ""}
       <div class="small" style="margin-top:6px">${esc(storeName(state.store))} · ${esc(state.store)}</div>
     </div>
     <div class="stack">
@@ -720,6 +733,84 @@ function chooseSection(section) {
   render();
 }
 
+let suggestions = [];
+
+function looksLikeBarcode(text) {
+  const raw = String(text || "").replace(/[\s-]/g, "");
+  const digits = raw.replace(/\D/g, "");
+  return digits.length >= 6 && digits.length >= raw.length * 0.8;
+}
+
+function paintSuggestions() {
+  const box = document.getElementById("suggest");
+  if (!box) return;
+  const query = state.typed.trim();
+  suggestions = query && state.store ? searchCatalog(state.store, query) : [];
+  if (!query) {
+    box.innerHTML = "";
+    return;
+  }
+  const rows = suggestions.map((item, index) => `
+    <button type="button" class="btn" data-action="suggest" data-index="${index}">
+      <span>${esc(item.name)}</span>
+      <span class="ticket-num">${item.tickets == null ? "" : esc(formatNumber(item.tickets))}</span>
+    </button>`).join("");
+  const empty = suggestions.length
+    ? ""
+    : `<div class="muted" style="padding:8px 4px 4px">No match.</div>
+       <button type="button" class="btn primary" data-action="add-from-search">Add as a new product</button>`;
+  box.innerHTML = rows + empty;
+}
+
+function selectKnownItem(item) {
+  if (!item) return;
+  state.typed = "";
+  suggestions = [];
+  resetEntry();
+  state.editingId = null;
+  state.dupDraft = null;
+  state.justMatched = false;
+  state.pendingCode = "";
+  state.item = item;
+  state.screen = "kind";
+  render();
+}
+
+function submitSearch() {
+  const typed = state.typed.trim();
+  if (!typed || !state.store) return;
+  const found = lookupBarcode(typed, state.store, null);
+  if (found.item || looksLikeBarcode(typed)) {
+    handleCode(typed, null);
+    return;
+  }
+  const matches = searchCatalog(state.store, typed);
+  if (matches.length === 1) {
+    selectKnownItem(matches[0]);
+    return;
+  }
+  if (matches.length > 1) {
+    paintSuggestions();
+    return;
+  }
+  startNewFromSearch();
+}
+
+function startNewFromSearch() {
+  const typed = state.typed.trim();
+  if (looksLikeBarcode(typed)) {
+    handleCode(typed, null);
+    return;
+  }
+  state.pendingCode = "";
+  state.search = "";
+  state.newName = typed;
+  state.nameError = "";
+  state.ticketInput = "";
+  state.screen = "new-name";
+  render();
+}
+
 function handleCode(raw, format) {
   const typed = String(raw ?? "").replace(/\s/g, "");
   if (!typed || !state.store) return;
@@ -1072,7 +1163,13 @@ function onClick(event) {
       stopCamera();
       break;
     case "lookup":
-      handleCode(state.typed, null);
+      submitSearch();
+      break;
+    case "suggest":
+      selectKnownItem(suggestions[Number(button.dataset.index)]);
+      break;
+    case "add-from-search":
+      startNewFromSearch();
       break;
     case "back":
       goBack();
@@ -1197,7 +1294,11 @@ function onClick(event) {
 }
 
 function onInput(event) {
-  if (event.target.id === "typed") state.typed = event.target.value;
+  if (event.target.id === "typed") {
+    state.typed = event.target.value;
+    paintSuggestions();
+    return;
+  }
   if (event.target.id === "newName") {
     state.newName = event.target.value;
     if (state.nameError) {
@@ -1228,7 +1329,7 @@ function onInput(event) {
 function onKey(event) {
   if (event.key === "Enter" && event.target.id === "typed") {
     event.preventDefault();
-    handleCode(state.typed, null);
+    submitSearch();
     return;
   }
   if (event.key === "Enter" && event.target.id === "newName") {

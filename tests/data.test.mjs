@@ -11,7 +11,9 @@ import {
   getItems,
   getPackSize,
   getPendingSheetRows,
+  itemMatchesQuery,
   lookupBarcode,
+  searchCatalog,
   normalizeCode,
   parsePack,
   pieces,
@@ -74,6 +76,22 @@ describe("catalog and barcodes", { concurrency: false }, () => {
     assert.equal(lookupBarcode("910371810538", "CPR").item.name, "Disco Lamp (Lounge monkey)");
     assert.equal(lookupBarcode("097138502094", "WPR").item, null);
     assert.equal(lookupBarcode("097138502094", "CPR").item, null);
+  });
+
+  test("name search matches partial words and barcodes, and ignores mid-word hits", () => {
+    const laser = searchCatalog("WPR", "laser spin");
+    assert.equal(laser.length, 1);
+    assert.equal(laser[0].name, "Laser Spin Top (144/bag)");
+    const pouch = searchCatalog("CPR", "smarties pouch");
+    assert.ok(pouch.some((item) => item.name === "Smarties 3 Tablet Pouch Bulk Asmt"));
+    assert.equal(searchCatalog("WPR", "art").some((item) => /smarties/i.test(item.name)), false);
+    const byCode = searchCatalog("WPR", "011206");
+    assert.ok(byCode.some((item) => item.name.startsWith("Smarties")));
+    assert.ok(byCode.some((item) => item.name.startsWith("Giant Smarties")));
+    const offList = searchCatalog("CPR", "jelle pets");
+    assert.equal(offList[0].name, "Oh So Jelle Pets");
+    assert.equal(itemMatchesQuery("Laser Spin Top 1.5in Asmt", [], "1.5"), true);
+    assert.equal(searchCatalog("WPR", "").length, 0);
   });
 
   test("CPR Oh So Jelle Pets is confirmed even though it is off the September list", () => {

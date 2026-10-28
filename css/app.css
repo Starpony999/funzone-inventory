@@ -297,7 +297,7 @@ input[type="text"], input[type="search"], input[type="url"], input[type="passwor
   color: var(--ink);
 }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.row input { flex: 1 1 180px; width: auto; }
+.row input { flex: 1 1 120px; width: auto; min-width: 0; }
 .row .btn { width: auto; min-height: 52px; }
 
 .finder {
@@ -326,7 +326,29 @@ input[type="text"], input[type="search"], input[type="url"], input[type="passwor
   max-height: 46vh;
   margin-bottom: 10px;
 }
-.cam video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cam video { width: 100%; height: 100%; object-fit: cover; display: block; transform-origin: center center; }
+.cam-tools {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.cam-tool, .cam-zoom {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  min-height: 40px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+.cam-tool[aria-pressed="true"] { background: #fbbf24; color: #1c1917; font-weight: 700; }
+.cam-zoom { flex: 1; display: flex; align-items: center; gap: 8px; }
+.cam-zoom input { flex: 1; min-width: 0; accent-color: #fbbf24; }
 .guide {
   position: absolute;
   left: 8%;
@@ -357,6 +379,9 @@ input[type="text"], input[type="search"], input[type="url"], input[type="passwor
   text-align: center;
 }
 .engine { font-size: 13px; color: var(--muted); min-height: 1.2em; margin: 8px 0 0; }
+.suggest { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; max-height: 280px; overflow-y: auto; }
+.suggest .btn { min-height: 56px; font-size: 16px; font-weight: 550; }
+.suggest .btn.primary { min-height: 56px; font-size: 17px; font-weight: 650; justify-content: center; }
 .block-warn {
   font-size: 14px;
   color: var(--warning);

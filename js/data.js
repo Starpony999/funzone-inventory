@@ -719,6 +719,89 @@ export function getItems(store) {
   return storeItems(store).map((item) => ({ ...item }));
 }
 
+// Each word of the query must start a word in the name ("pou" matches "Pouch",
+// "art" does not match "Smarties"). A token with punctuation matches that
+// text in the name ("1.5"). Four or more digits also match a barcode.
+export function itemMatchesQuery(name, codes, query) {
+  const tokens = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!tokens.length || !String(name || "").trim()) return false;
+  const lower = String(name).toLowerCase();
+  const words = lower.split(/[^a-z0-9]+/).filter(Boolean);
+  const digits = (codes || []).map((code) => String(code).replace(/\D/g, "")).filter(Boolean);
+  return tokens.every((token) => {
+    const bare = token.replace(/[^a-z0-9]/g, "");
+    if (bare && words.some((word) => word.startsWith(bare))) return true;
+    if (/[^a-z0-9]/i.test(token) && lower.includes(token)) return true;
+    const numeric = token.replace(/\D/g, "");
+    if (numeric.length >= 4 && digits.some((code) => code.includes(numeric))) return true;
+    return false;
+  });
+}
+
+function searchRank(name, query) {
+  const n = String(name || "").toLowerCase();
+  const q = String(query || "").trim().toLowerCase();
+  if (n === q) return 0;
+  if (n.startsWith(q)) return 1;
+  const words = n.split(/[^a-z0-9]+/).filter(Boolean);
+  let from = 0;
+  for (const token of q.split(/\s+/)) {
+    const bare = token.replace(/[^a-z0-9]/g, "");
+    const at = words.findIndex((word, index) => index >= from && bare && word.startsWith(bare));
+    if (at < 0) return 3;
+    from = at + 1;
+  }
+  return 2;
+}
+
+function codesByName(store) {
+  const grouped = new Map();
+  const add = (name, code) => {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (!grouped.has(key)) grouped.set(key, { name: trimmed, codes: [] });
+    if (code) grouped.get(key).codes.push(String(code));
+  };
+  const table = cachedBarcodeRows() || REAL_BARCODES;
+  for (const row of table) add(row[store], row.code);
+  const learned = readLearned();
+  for (const key of Object.keys(learned)) {
+    if (!key.startsWith(store + ":")) continue;
+    add(learned[key] && learned[key].name, learned[key] && learned[key].code);
+  }
+  return grouped;
+}
+
+// Live name / barcode suggestions for one store. Month-tab items come first.
+// Barcode-sheet names that are not on the month tab are included too.
+export function searchCatalog(store, query) {
+  const q = String(query || "").trim();
+  if (!q || (store !== "WPR" && store !== "CPR")) return [];
+  const items = storeItems(store);
+  const known = new Map(items.map((item) => [item.name.toLowerCase(), { ...item }]));
+  const grouped = codesByName(store);
+  const hits = [];
+  const seen = new Set();
+  const consider = (item, codes) => {
+    const key = item.name.toLowerCase();
+    if (seen.has(key) || !itemMatchesQuery(item.name, codes, q)) return;
+    seen.add(key);
+    hits.push(item);
+  };
+  for (const item of items) {
+    const extra = grouped.get(item.name.toLowerCase());
+    const codes = [item.barcode, ...(extra ? extra.codes : [])].filter(Boolean);
+    consider({ ...item }, codes);
+  }
+  for (const entry of grouped.values()) {
+    if (known.has(entry.name.toLowerCase())) continue;
+    consider(resolveName(items, entry.name, entry.codes[0]), entry.codes);
+  }
+  hits.sort((a, b) => searchRank(a.name, q) - searchRank(b.name, q) || a.name.localeCompare(b.name));
+  return hits.slice(0, 8);
+}
+
 export function lookupBarcode(code, store, format) {
   const raw = String(code ?? "").replace(/[\s-]/g, "");
   const normalized = raw ? normalizeCode(raw, format) : "";

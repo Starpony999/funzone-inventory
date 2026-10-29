@@ -597,6 +597,21 @@ function clearBarcodePending(store, code) {
   }
 }
 
+// The barcode sheet is the source of truth once a phone save has synced.
+// Pending rows are still waiting to be written, so they stay.
+function dropSyncedLearned() {
+  const learned = readLearned();
+  let changed = false;
+  for (const key of Object.keys(learned)) {
+    if (!learned[key] || learned[key].pending) continue;
+    delete learned[key];
+    changed = true;
+  }
+  if (!changed) return;
+  mem.learned = learned;
+  writeJSON(KEYS.learned, learned);
+}
+
 function queueUnsynced() {
   if (!sheetEnabled()) return;
   const testing = getTesting();
@@ -661,7 +676,10 @@ async function refreshStoreNow(store) {
   try {
     const data = await sheetRequest("getCatalog", { store });
     applyCatalog(store, data);
-    if (Array.isArray(data.barcodes)) applyBarcodes(data.barcodes);
+    if (Array.isArray(data.barcodes)) {
+      applyBarcodes(data.barcodes);
+      dropSyncedLearned();
+    }
     if (Array.isArray(data.binItems)) applyBinItems(data.binItems);
     if (Array.isArray(data.packSizes)) applyPackSizes(data.packSizes);
     setSheetStatus({ error: "", message: "", tab: data.tab || "", okAt: Date.now() });
@@ -683,9 +701,10 @@ export function catalogInfo(store) {
   return { source: "sample", fetchedAt: 0, tab: "" };
 }
 
-// A few minutes. The phone reloads while the list is missing or older than this.
+// A few minutes. Used by the background retry, not by opening the app.
 export const CATALOG_STALE_MS = 5 * 60 * 1000;
 
+// Background reloads use this. Opening the app does not: boot always calls refreshStore.
 export function catalogNeedsRefresh(store, now = Date.now()) {
   if (store !== "WPR" && store !== "CPR") return false;
   const info = catalogInfo(store);
@@ -906,7 +925,8 @@ function codesByName(store) {
   const learned = readLearned();
   for (const key of Object.keys(learned)) {
     if (!key.startsWith(store + ":")) continue;
-    add(learned[key] && learned[key].name, learned[key] && learned[key].code);
+    if (!learned[key] || !learned[key].pending) continue;
+    add(learned[key].name, learned[key].code);
   }
   return grouped;
 }
@@ -947,7 +967,7 @@ export function lookupBarcode(code, store, format) {
   if (!raw || (store !== "WPR" && store !== "CPR")) return result;
   const items = storeItems(store);
   const learned = readLearned()[store + ":" + normalized];
-  if (learned && learned.name) {
+  if (learned && learned.pending && learned.name) {
     result.item = resolveName(items, learned.name, learned.code || raw);
     result.source = "learned";
     return result;

@@ -335,6 +335,7 @@ try {
   await see(page, "Don't save counts");
   await see(page, "Don't save barcodes");
   await see(page, "Don't save new items");
+  await see(page, "Reload from sheet");
   await click(page, '[data-action="testing"][data-flag="skipCounts"]');
   await see(page, "Not saving counts");
   assert.equal(await page.$eval(".badge.testing", (el) => el.textContent.trim()), "Testing");

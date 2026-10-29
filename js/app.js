@@ -87,6 +87,7 @@ const state = {
   scriptPin: "",
   connMessage: "",
   connBusy: false,
+  reloadNote: "",
   screenBeforeSettings: "store",
 };
 
@@ -210,6 +211,7 @@ function notesHtml() {
   const showNote = note.testing || !sample;
   return `
     ${showNote ? `<p class="note${note.testing ? " testing" : ""}">${esc(note.text)}</p>` : ""}
+    ${state.reloadNote ? `<p class="note">${esc(state.reloadNote)}</p>` : ""}
     ${sample}`;
 }
 
@@ -245,6 +247,7 @@ function header() {
       ${testingSwitch("skipCounts", "Don't save counts", flags.skipCounts)}
       ${testingSwitch("skipBarcodes", "Don't save barcodes", flags.skipBarcodes)}
       ${testingSwitch("skipItems", "Don't save new items", flags.skipItems)}
+      ${state.store ? `<button class="btn quiet" data-action="reload-sheet">Reload from sheet</button>` : ""}
       <button class="btn quiet" data-action="sheet-settings">Sheet connection</button>
     </div>` : "";
   return `
@@ -1284,6 +1287,9 @@ function onClick(event) {
       render();
       break;
     }
+    case "reload-sheet":
+      reloadFromSheet();
+      break;
     case "sheet-settings": {
       const conn = getConnection();
       state.scriptUrl = conn.url;
@@ -1567,6 +1573,25 @@ function showCatalog(result, before) {
   else render();
 }
 
+function reloadFromSheet() {
+  state.menuOpen = false;
+  if (!state.store) return;
+  if (!sheetEnabled()) {
+    state.reloadNote = "Google Sheet isn't connected yet.";
+    render();
+    return;
+  }
+  state.reloadNote = "Loading the sheet…";
+  render();
+  refreshStore(state.store).then((result) => {
+    state.reloadNote = result && result.ok
+      ? "Updated from the sheet."
+      : (result && result.message) || "Couldn't reach the sheet.";
+    if (cameraIsOn()) syncLiveLists();
+    else render();
+  });
+}
+
 function retryCatalog() {
   if (!state.store || !sheetEnabled()) return;
   if (!catalogNeedsRefresh(state.store) && !getSheetStatus().error) return;
@@ -1597,6 +1622,8 @@ function boot() {
   document.addEventListener("input", onInput);
   document.addEventListener("keydown", onKey);
   render();
+  // Opening the app always loads the sheet. The 5-minute check is only for
+  // the background retry below.
   if (state.store) {
     refreshStore(state.store).then(() => {
       if (state.screen === "settings" || cameraIsOn()) return;

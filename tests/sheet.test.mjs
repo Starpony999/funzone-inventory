@@ -14,6 +14,7 @@ import {
   lookupBarcode,
   onSheetRecovered,
   refreshStore,
+  reloadLocalData,
   removeCount,
   resetLocalData,
   saveBarcode,
@@ -135,6 +136,50 @@ describe("sheet cache", { concurrency: false }, () => {
     assert.equal(searchCatalog("CPR", "xtreme sour")[0].name, "Smarties XTreme Sour");
     assert.equal(catalogNeedsRefresh("CPR"), false);
     assert.equal(catalogNeedsRefresh("CPR", Date.now() + CATALOG_STALE_MS + 1000), true);
+  });
+
+  test("a synced barcode follows the sheet, and a fresh load is not skipped", async () => {
+    let barcodes = [{ code: "075656049338", WPR: "", CPR: "Wrong Name" }];
+    const calls = [];
+    setSheetClient(async (payload) => {
+      calls.push(payload);
+      if (payload.action === "getCatalog") {
+        return {
+          ok: true,
+          tab: "CPR - Oct 2026",
+          items: [{ name: "Oh So Jelle Pets", tickets: 10 }, { name: "Wrong Name", tickets: 10 }],
+          barcodes,
+          binItems: [],
+          packSizes: [],
+        };
+      }
+      return { ok: true };
+    });
+    setTesting({ skipBarcodes: true });
+    saveBarcode("075656049338", "CPR", "Airheads Bites", { pending: true });
+    assert.equal(lookupBarcode("075656049338", "CPR").item.name, "Airheads Bites");
+    assert.equal(lookupBarcode("075656049338", "CPR").source, "learned");
+    await refreshStore("CPR");
+    assert.equal(lookupBarcode("075656049338", "CPR").item.name, "Airheads Bites");
+    assert.ok(searchCatalog("CPR", "airheads").some((item) => item.name === "Airheads Bites"));
+
+    const stored = JSON.parse(localStorage.getItem("fz-learned-barcodes"));
+    const key = Object.keys(stored).find((item) => item.startsWith("CPR:"));
+    delete stored[key].pending;
+    localStorage.setItem("fz-learned-barcodes", JSON.stringify(stored));
+    reloadLocalData();
+    assert.equal(lookupBarcode("075656049338", "CPR").item.name, "Wrong Name");
+    assert.equal(lookupBarcode("075656049338", "CPR").source, "barcode");
+
+    barcodes = [{ code: "999000000001", WPR: "", CPR: "Oh So Jelle Pets" }];
+    assert.equal(catalogNeedsRefresh("CPR"), false);
+    const before = calls.filter((call) => call.action === "getCatalog").length;
+    await refreshStore("CPR");
+    assert.ok(calls.filter((call) => call.action === "getCatalog").length > before);
+    assert.equal(lookupBarcode("075656049338", "CPR").item, null);
+    assert.equal(lookupBarcode("999000000001", "CPR").item.name, "Oh So Jelle Pets");
+    assert.equal(searchCatalog("CPR", "airheads").some((item) => item.name === "Airheads Bites"), false);
+    setTesting({ skipBarcodes: false });
   });
 });
 

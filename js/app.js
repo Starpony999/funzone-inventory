@@ -102,6 +102,7 @@ const state = {
   lastSaved: null,
   banner: null,
   dupDraft: null,
+  dupSection: null,
   confirmClear: false,
   sheetNote: "",
   scriptUrl: "",
@@ -176,13 +177,21 @@ function filteredItems() {
   return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function earlierHere() {
-  if (!state.store || !state.section || !state.item) return [];
+function countsIn(section) {
+  if (!state.store || !section || !state.item) return [];
   return state.entries.filter((entry) => (
     entry.store === state.store
-    && entry.section === state.section
+    && entry.section === section
     && entry.item === state.item.name
   ));
+}
+
+function earlierHere() {
+  return countsIn(state.section);
+}
+
+function dupSectionNow() {
+  return state.dupSection || state.section;
 }
 
 function render() {
@@ -951,23 +960,59 @@ function dialog() {
   return "";
 }
 
-function dupDialog() {
-  const earlier = earlierHere();
-  const already = earlier.reduce((sum, entry) => sum + (pieces(entry) ?? 0), 0);
-  const draft = {
+function countedDraft() {
+  return {
     ...state.dupDraft,
     perOz: state.item ? state.item.perOz : null,
     fullBin: state.item ? state.item.fullBin : null,
   };
+}
+
+// The number already entered, shaped for the section it will be saved in.
+// Front keeps a loose piece count. A bin moved out of Front becomes that
+// piece estimate, so Back and Break Room get column K or L, not bin quarters.
+function draftForSection(section) {
+  const base = countedDraft();
+  if (base.kind === "bin" && section !== "Front") {
+    const count = pieces(base);
+    if (count == null) return null;
+    return {
+      kind: "count",
+      count,
+      loose: count,
+      containerNote: describeEntry(base),
+      section,
+    };
+  }
+  if (base.kind === "count" && section === "Front") {
+    const loose = { kind: "count", count: base.count, loose: base.count, section };
+    if (base.frontFull === true || base.frontFull === false) {
+      loose.gross = base.gross;
+      loose.frontCount = base.frontCount;
+      loose.frontFull = base.frontFull;
+    }
+    return loose;
+  }
+  return { ...state.dupDraft, section };
+}
+
+function dupDialog() {
+  const section = dupSectionNow();
+  const earlier = countsIn(section);
+  const already = earlier.reduce((sum, entry) => sum + (pieces(entry) ?? 0), 0);
+  const draft = countedDraft();
+  const moves = SECTIONS.filter((name) => name !== section && draftForSection(name)).map((name) => `
+    <button class="btn quiet" data-action="dup-section" data-section="${esc(name)}">Save in ${esc(name)}</button>`).join("");
   return `
     <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="dupTitle">
       <div class="backdrop"></div>
       <div class="dialog">
-        <h2 id="dupTitle">Already counted in ${esc(state.section)}: ${esc(formatNumber(already))} pcs</h2>
+        <h2 id="dupTitle">Already counted in ${esc(section)}: ${esc(formatNumber(already))} pcs</h2>
         <p class="muted" style="margin-top:6px">${esc(state.item ? state.item.name : "")}. This count: ${esc(formatPieces(pieces(draft)))}. Add this count too?</p>
         <div class="stack">
           <button class="btn primary" data-action="dup-add">Yes, add it</button>
           <button class="btn quiet" data-action="dup-replace">Replace the earlier one</button>
+          ${moves ? `<p class="small">Or save this count in</p>${moves}` : ""}
           <button class="btn quiet" data-action="dup-cancel" style="color:var(--muted)">No, cancel</button>
         </div>
       </div>
@@ -1316,9 +1361,24 @@ function doneBack() {
   saveDraft({ kind: "count", count: total, loose: total, containerNote: note });
 }
 
+function saveInSection(section) {
+  const draft = draftForSection(section);
+  if (!draft || section === dupSectionNow()) return;
+  const { section: _section, ...count } = draft;
+  state.dupDraft = count;
+  if (countsIn(section).length) {
+    state.dupSection = section;
+    render();
+    return;
+  }
+  state.dupSection = section;
+  commit({ ...count, section }, []);
+}
+
 function saveDraft(partial) {
   if (state.editingId == null && earlierHere().length > 0) {
     state.dupDraft = partial;
+    state.dupSection = null;
     render();
     return;
   }
@@ -1340,6 +1400,7 @@ function commit(partial, replaceIds) {
   state.lastSaved = saved ? saved.id : null;
   state.editingId = null;
   state.dupDraft = null;
+  state.dupSection = null;
   state.banner = "saved";
   state.sheetNote = sheetNoteFor(saved);
   resetEntry();
@@ -1869,13 +1930,17 @@ function onClick(event) {
       break;
     }
     case "dup-add":
-      commit(state.dupDraft, []);
+      commit({ ...state.dupDraft, section: dupSectionNow() }, []);
       break;
     case "dup-replace":
-      commit(state.dupDraft, earlierHere().map((entry) => entry.id));
+      commit({ ...state.dupDraft, section: dupSectionNow() }, countsIn(dupSectionNow()).map((entry) => entry.id));
+      break;
+    case "dup-section":
+      saveInSection(button.dataset.section);
       break;
     case "dup-cancel":
       state.dupDraft = null;
+      state.dupSection = null;
       resetEntry();
       state.item = null;
       state.editingId = null;

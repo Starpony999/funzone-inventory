@@ -119,6 +119,10 @@ try {
   await click(page, '[data-action="save-count"]');
   await see(page, "Already counted in Front: 76 pcs");
   await see(page, "Yes, add it");
+  await see(page, "Replace the earlier one");
+  await see(page, "Save in Back");
+  await see(page, "Save in Break Room");
+  await see(page, "No, cancel");
   await shot(page, "06-duplicate");
   await click(page, '[data-action="dup-add"]');
   await see(page, "112 pcs");
@@ -481,6 +485,9 @@ try {
   await extra.evaluateOnNewDocument(() => {
     try {
       localStorage.setItem("fz-containers", JSON.stringify([{ name: "bucket", lb: 1, oz: 2 }]));
+      localStorage.setItem("fz-bin-items", JSON.stringify([
+        { short: "Dum Dum", WPR: "Dum Dum Pops", CPR: "Dum Dum Pops", doubleBin: true },
+      ]));
       localStorage.setItem("fz-back-containers", JSON.stringify([
         { item: "Pops", WPR: "Dum Dum Pops", CPR: "Dum Dum Pops", container: "bucket", fullCount: 40 },
       ]));
@@ -558,6 +565,66 @@ try {
   await see(extra, "Recent barcode links");
   await see(extra, "Laser Spin Top (144/bag)");
   await see(extra, "undone");
+
+  await click(extra, '[data-action="menu"]');
+  await click(extra, '[data-action="change-section"]');
+  await click(extra, '[data-action="section"][data-section="Front"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "011206003210");
+  await click(extra, '[data-action="lookup"]');
+  await click(extra, '[data-action="kind-count"]');
+  await pad(extra, ["1", "0"]);
+  await click(extra, '[data-action="save-count"]');
+  await see(extra, "Saved");
+  await click(extra, '[data-action="scan-next"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "011206003210");
+  await click(extra, '[data-action="lookup"]');
+  await click(extra, '[data-action="kind-count"]');
+  await pad(extra, ["4"]);
+  await click(extra, '[data-action="save-count"]');
+  await see(extra, "Already counted in Front: 10 pcs");
+  await see(extra, "This count: 4 pcs");
+  await click(extra, '[data-action="dup-section"][data-section="Back"]');
+  await see(extra, "Saved");
+  assert.match(await text(extra), /WPR · Front/);
+  await see(extra, "Front 10 + Back 4 = 14");
+  await extra.screenshot({ path: `${outDir}/31-save-other-section.png` });
+
+  await click(extra, '[data-action="scan-next"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "011206003210");
+  await click(extra, '[data-action="lookup"]');
+  await click(extra, '[data-action="kind-count"]');
+  await pad(extra, ["2"]);
+  await click(extra, '[data-action="save-count"]');
+  await see(extra, "Already counted in Front: 10 pcs");
+  await click(extra, '[data-action="dup-section"][data-section="Back"]');
+  await see(extra, "Already counted in Back: 4 pcs");
+  await see(extra, "This count: 2 pcs");
+  await see(extra, "Save in Break Room");
+  await click(extra, '[data-action="dup-add"]');
+  await see(extra, "Front 10 + Back 6 = 16");
+
+  await click(extra, '[data-action="scan-next"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "041116023459");
+  await click(extra, '[data-action="lookup"]');
+  await see(extra, "How full is the bin?");
+  await click(extra, '[data-action="bin"][data-q="1"]');
+  await see(extra, "Saved");
+  await see(extra, "125 pcs");
+  await click(extra, '[data-action="scan-next"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "041116023459");
+  await click(extra, '[data-action="lookup"]');
+  await click(extra, '[data-action="bin"][data-q="1"]');
+  await see(extra, "Already counted in Front");
+  await click(extra, '[data-action="dup-section"][data-section="Break Room"]');
+  await see(extra, "Saved");
+  await see(extra, "Bin: Quarter (est.)");
+  await see(extra, "Break Room");
+  assert.match(await text(extra), /WPR · Front/);
 
   assert.deepEqual(errors, []);
   console.log("browser flow ok");

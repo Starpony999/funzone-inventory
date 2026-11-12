@@ -542,6 +542,8 @@ input[type="text"], input[type="search"], input[type="url"], input[type="passwor
   position: relative;
   width: 100%;
   max-width: 400px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   background: var(--elevated);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-xl);

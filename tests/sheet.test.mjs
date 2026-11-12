@@ -211,9 +211,41 @@ describe("sheet writes", { concurrency: false }, () => {
 
     const counts = calls.filter((call) => call.action === "applyCount");
     assert.equal(counts[0].delta.pieces, 10);
+    assert.equal(counts[0].section, "Front");
     assert.equal(counts[1].delta.pieces, -6);
     assert.equal(counts[2].delta.pieces, -4);
     assert.equal(getCounts().length, 0);
+  });
+
+  test("a count aimed at another section is queued for that section", async () => {
+    const calls = recordingClient();
+    saveCount({
+      store: "WPR",
+      section: "Back",
+      item: "Dum Dum Pops",
+      tickets: 20,
+      kind: "count",
+      count: 4,
+      loose: 4,
+    });
+    saveCount({
+      store: "WPR",
+      section: "Break Room",
+      item: "Dum Dum Pops",
+      tickets: 20,
+      kind: "count",
+      count: 2,
+      loose: 2,
+    });
+    await whenSheetIdle();
+    const counts = calls.filter((call) => call.action === "applyCount");
+    assert.equal(counts[0].section, "Back");
+    assert.equal(counts[0].delta.pieces, 4);
+    assert.equal(counts[1].section, "Break Room");
+    assert.equal(counts[1].delta.pieces, 2);
+    assert.deepEqual(mapCountOntoRow({ section: "Front", kind: "count", count: 4 }, {}).updates, { J: 4 });
+    assert.deepEqual(mapCountOntoRow({ section: "Back", kind: "count", count: 4 }, {}).updates, { K: 4 });
+    assert.deepEqual(mapCountOntoRow({ section: "Break Room", kind: "count", count: 2 }, {}).updates, { L: 2 });
   });
 
   test("weight in two sections is two ounce additions, not two piece columns", async () => {

@@ -440,6 +440,28 @@ input[type="text"], input[type="search"], input[type="url"], input[type="passwor
   background: var(--elevated);
   font-size: 24px;
 }
+.pad.ops { grid-template-columns: repeat(6, 1fr); }
+.pad.ops button { font-size: 22px; min-height: 52px; }
+.toast {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--ink);
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.toast .link { color: #fff; min-height: 44px; }
+.link-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
 .save { margin-top: 16px; justify-content: center; }
 
 .bins { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }

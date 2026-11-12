@@ -26,9 +26,20 @@ import {
   removeCount,
   resetLocalData,
   saveBarcode,
+  saveContainer,
   saveCount,
+  saveBackFull,
   savePackSize,
   setTesting,
+  tareNet,
+  undoBarcodeLink,
+  evalCountExpr,
+  backOptions,
+  containerPieces,
+  getBarcodeLinks,
+  listContainers,
+  lastContainer,
+  rememberContainer,
 } from "../js/data.js";
 
 const store = new Map();
@@ -346,5 +357,68 @@ describe("local session", { concurrency: false }, () => {
     assert.deepEqual(getPack("WPR", "Samurai Sword"), { size: 6, unit: "box" });
     assert.deepEqual(savePackSize("CPR", "flarp Noise Putty", 48, "bag"), { size: 48, unit: "bag" });
     assert.deepEqual(getPack("CPR", "flarp Noise Putty"), { size: 48, unit: "bag" });
+  });
+});
+
+describe("count math, containers, and barcode undo", () => {
+  test("count boxes accept simple math", () => {
+    assert.equal(evalCountExpr("3 x 6").value, 18);
+    assert.equal(evalCountExpr("3*6").value, 18);
+    assert.equal(evalCountExpr("18+4").value, 22);
+    assert.equal(evalCountExpr("(3x6)+2").value, 20);
+    assert.equal(evalCountExpr("3 × 6").value, 18);
+    assert.equal(evalCountExpr("3 x").ok, false);
+    assert.equal(evalCountExpr("").empty, true);
+  });
+
+  test("empty container weight is subtracted and a heavier container is refused", () => {
+    const net = tareNet(3, 4, 1, 2);
+    assert.equal(net.ok, true);
+    assert.equal(net.lb, 2);
+    assert.equal(net.oz, 2);
+    assert.equal(tareNet(0, 4, 1, 0).ok, false);
+    assert.equal(
+      describeEntry({ kind: "weight", lb: 2, oz: 2, grossLb: 3, grossOz: 4, tareLb: 1, tareOz: 2, container: "bucket", perOz: 1 }),
+      "3 lb 4 oz minus bucket 1 lb 2 oz = 2 lb 2 oz",
+    );
+  });
+
+  test("a new container is remembered for that item", () => {
+    resetLocalData();
+    const saved = saveContainer("Bucket", 1, 2);
+    assert.deepEqual(saved, { name: "Bucket", lb: 1, oz: 2 });
+    assert.equal(listContainers()[0].name, "Bucket");
+    rememberContainer("WPR", "Dum Dum Pops", "Bucket");
+    assert.equal(lastContainer("WPR", "Dum Dum Pops"), "Bucket");
+  });
+
+  test("back containers turn quarters into pieces", () => {
+    resetLocalData();
+    localStorage.setItem("fz-back-containers", JSON.stringify([
+      { item: "Rings", WPR: "Mood Ring", CPR: "", container: "Bucket", fullCount: 40 },
+      { item: "Rings", WPR: "Mood Ring", CPR: "", container: "Tub", fullCount: null },
+    ]));
+    reloadLocalData();
+    const options = backOptions("WPR", "Mood Ring");
+    assert.deepEqual(options.map((row) => row.container), ["Bucket", "Tub"]);
+    assert.equal(options[0].fullCount, 40);
+    assert.equal(options[1].fullCount, null);
+    assert.equal(containerPieces(40, 1), 10);
+    assert.equal(containerPieces(40, 2), 20);
+    assert.equal(containerPieces(40, 3), 30);
+    assert.equal(containerPieces(40, 4), 40);
+    assert.equal(backOptions("WPR", "Giant Smarties").length, 0);
+    assert.equal(saveBackFull("WPR", "Mood Ring", "Tub", 80), 80);
+    reloadLocalData();
+    assert.equal(backOptions("WPR", "Mood Ring").find((row) => row.container === "Tub").fullCount, 80);
+  });
+
+  test("undo removes the phone's barcode link", () => {
+    resetLocalData();
+    const saved = saveBarcode("12345670", "WPR", "Samurai Sword");
+    assert.equal(lookupBarcode("12345670", "WPR").item.name, "Samurai Sword");
+    undoBarcodeLink(saved.linkId);
+    assert.equal(lookupBarcode("12345670", "WPR").item, null);
+    assert.equal(getBarcodeLinks()[0].undone, true);
   });
 });

@@ -93,10 +93,10 @@ try {
   await see(page, "How are you counting it?");
   assert.equal((await text(page)).includes("Count instead"), false);
   await click(page, '[data-action="kind-count"]');
-  await see(page, "Full boxes (36 each)");
-  await pad(page, ["2"]);
-  await click(page, '[data-action="field"][data-field="loose"]');
-  await pad(page, ["3"]);
+  await see(page, "How many pieces?");
+  assert.equal((await text(page)).includes("Counting packs?"), false);
+  assert.equal((await text(page)).includes("Full boxes"), false);
+  await pad(page, ["7", "5"]);
   await see(page, "75 pcs");
   await shot(page, "04-count");
   await click(page, '[data-action="save-count"]');
@@ -104,10 +104,8 @@ try {
   await see(page, "75 pcs");
 
   await click(page, '[data-action="edit"]');
-  const before = await page.$$eval(".field .num", (els) => els.map((el) => el.textContent.trim()));
-  assert.deepEqual(before, ["2", "3"]);
-  await click(page, '[data-action="field"][data-field="loose"]');
-  await pad(page, ["del", "4"]);
+  await see(page, "75");
+  await pad(page, ["del", "6"]);
   await see(page, "76 pcs");
   await click(page, '[data-action="save-count"]');
   await see(page, "76 pcs");
@@ -117,7 +115,7 @@ try {
   await page.type("#typed", "011206003210");
   await click(page, '[data-action="lookup"]');
   await click(page, '[data-action="kind-count"]');
-  await pad(page, ["1"]);
+  await pad(page, ["3", "6"]);
   await click(page, '[data-action="save-count"]');
   await see(page, "Already counted in Front: 76 pcs");
   await see(page, "Yes, add it");
@@ -140,6 +138,9 @@ try {
   await see(page, "76 pcs");
   await shot(page, "08-weight");
   await click(page, '[data-action="save-weight"]');
+  await see(page, "Which container?");
+  await see(page, "No container");
+  await click(page, '[data-action="save-container-choice"]');
   await see(page, "Saved");
 
   await click(page, '[data-action="menu"]');
@@ -299,6 +300,9 @@ try {
   assert.equal((await text(page)).includes("Which item is this?"), false);
 
   await click(page, '[data-action="back"]');
+  await click(page, '[data-action="menu"]');
+  await click(page, '[data-action="change-section"]');
+  await click(page, '[data-action="section"][data-section="Back"]');
   await page.type("#typed", "028400090896");
   await click(page, '[data-action="lookup"]');
   await see(page, "Which item is this?");
@@ -336,6 +340,7 @@ try {
   await see(page, "Don't save barcodes");
   await see(page, "Don't save new items");
   await see(page, "Reload from sheet");
+  await see(page, "Recent barcode links");
   await click(page, '[data-action="testing"][data-flag="skipCounts"]');
   await see(page, "Not saving counts");
   assert.equal(await page.$eval(".badge.testing", (el) => el.textContent.trim()), "Testing");
@@ -355,7 +360,8 @@ try {
   await click(page, '[data-action="lookup"]');
   await see(page, "Princess Tiara");
   await click(page, '[data-action="kind-weight"]');
-  await see(page, "How many pieces equal 10 oz?");
+  await see(page, "Pieces by weight");
+  await see(page, "Ounces");
   await pad(page, ["3", "0"]);
   await see(page, "30");
   await page.screenshot({ path: `${outDir}/20-pieces-per-10-oz.png` });
@@ -468,6 +474,90 @@ try {
   await see(noticePage, "Tap to retry");
   await noticePage.waitForSelector('[data-action="retry-catalog"]');
   await noticePage.screenshot({ path: `${outDir}/23-sample-catalog.png` });
+
+  const extraContext = await browser.createBrowserContext();
+  const extra = await extraContext.newPage();
+  extra.on("pageerror", (err) => errors.push("extra: " + String(err)));
+  await extra.evaluateOnNewDocument(() => {
+    try {
+      localStorage.setItem("fz-containers", JSON.stringify([{ name: "bucket", lb: 1, oz: 2 }]));
+      localStorage.setItem("fz-back-containers", JSON.stringify([
+        { item: "Pops", WPR: "Dum Dum Pops", CPR: "Dum Dum Pops", container: "bucket", fullCount: 40 },
+      ]));
+    } catch {
+      // about:blank has no storage. The real page still gets the lists.
+    }
+  });
+  await extra.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  await extra.goto(base, { waitUntil: "networkidle0" });
+  await click(extra, '[data-action="store"][data-store="WPR"]');
+  await click(extra, '[data-action="section"][data-section="Back"]');
+  await extra.type("#typed", "041116023459");
+  await click(extra, '[data-action="lookup"]');
+  await see(extra, "Container");
+  await click(extra, '[data-action="kind-container"]');
+  await see(extra, "How full is the bucket?");
+  await click(extra, '[data-action="back-q"][data-q="2"]');
+  await see(extra, "Another container?");
+  await see(extra, "Half bucket = 20 pcs");
+  await click(extra, '[data-action="back-done"]');
+  await see(extra, "Saved");
+  await see(extra, "20 pcs");
+  await extra.screenshot({ path: `${outDir}/27-back-container.png` });
+
+  await click(extra, '[data-action="scan-next"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "041116023459");
+  await click(extra, '[data-action="lookup"]');
+  await click(extra, '[data-action="kind-weight"]');
+  await pad(extra, ["3"]);
+  await click(extra, '[data-action="field"][data-field="oz"]');
+  await pad(extra, ["4"]);
+  await click(extra, '[data-action="save-weight"]');
+  await see(extra, "Which container?");
+  await click(extra, '[data-action="pick-container"][data-name="bucket"]');
+  await see(extra, "3 lb 4 oz minus bucket 1 lb 2 oz = 2 lb 2 oz");
+  await extra.screenshot({ path: `${outDir}/28-container-tare.png` });
+  await click(extra, '[data-action="back"]');
+  await click(extra, '[data-action="field"][data-field="lb"]');
+  await pad(extra, ["del"]);
+  await click(extra, '[data-action="field"][data-field="oz"]');
+  await pad(extra, ["del", "4"]);
+  await click(extra, '[data-action="save-weight"]');
+  await click(extra, '[data-action="pick-container"][data-name="bucket"]');
+  await see(extra, "That container weighs more than the scale");
+  assert.equal(await extra.$eval('[data-action="save-container-choice"]', (el) => el.disabled), true);
+
+  await click(extra, '[data-action="menu"]');
+  await click(extra, '[data-action="change-section"]');
+  await click(extra, '[data-action="section"][data-section="Front"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "011206003210");
+  await click(extra, '[data-action="lookup"]');
+  await click(extra, '[data-action="kind-count"]');
+  await extra.click("#countExpr", { clickCount: 3 });
+  await extra.type("#countExpr", "3 x 6");
+  await see(extra, "= 18");
+  await see(extra, "18 pcs");
+  await extra.screenshot({ path: `${outDir}/29-count-math.png` });
+
+  await click(extra, '[data-action="back"]');
+  await click(extra, '[data-action="back"]');
+  await extra.click("#typed", { clickCount: 3 });
+  await extra.type("#typed", "099999999999");
+  await click(extra, '[data-action="lookup"]');
+  await see(extra, "Which item is this?");
+  await click(extra, '[data-action="choose"][data-name="Laser Spin Top (144/bag)"]');
+  await see(extra, "Linked to Laser Spin Top (144/bag)");
+  await see(extra, "Undo");
+  await extra.screenshot({ path: `${outDir}/30-barcode-undo.png` });
+  await click(extra, '[data-action="undo-link"]');
+  assert.equal((await text(extra)).includes("Linked to Laser Spin Top (144/bag)"), false);
+  await click(extra, '[data-action="menu"]');
+  await click(extra, '[data-action="recent-links"]');
+  await see(extra, "Recent barcode links");
+  await see(extra, "Laser Spin Top (144/bag)");
+  await see(extra, "undone");
 
   assert.deepEqual(errors, []);
   console.log("browser flow ok");

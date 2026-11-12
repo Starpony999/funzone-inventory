@@ -157,7 +157,7 @@ When a product name does not say how many pieces are in a pack, staff can enter 
 
 ## Update the script before staff weigh a new item
 
-The app now asks "How many pieces equal 10 oz?" when an item has no pieces-per-ounce, then writes that into column D. The script on Google has to be the new one or column D stays blank.
+The app asks how many pieces are in a weighed amount, with ounces (starting at 10) and a piece count, then writes pieces divided by ounces into column D. The script on Google has to be the new one or column D stays blank.
 
 1. Open **FunZone Inventory 2026**.
 2. Click **Extensions**, then **Apps Script**.
@@ -170,6 +170,22 @@ The app now asks "How many pieces equal 10 oz?" when an item has no pieces-per-o
 9. Click **Deploy**.
 
 The web app link and the PIN stay the same. Phones do not need a new link. Do this before anyone weighs an item that is missing pieces per ounce. Until you do, the phone can still count, but column D will not update.
+
+## Containers, back-room containers, and barcode undo
+
+Paste `apps-script/Code.gs` and deploy a **New version** before staff use these. The web app link and the PIN stay the same.
+
+**Containers.** The barcodes spreadsheet gets a tab named **Containers**, with columns Container, Empty weight lb, Empty weight oz, and Notes. The script creates that tab the first time someone saves a new container, if it is not there yet. After a weight, the phone asks which container it was in, including No container and + New container. The empty weight is subtracted before columns F and G are written. The phone remembers the last container for that item at that store, and still shows the choice. If the container is heavier than the scale, the count is not saved.
+
+**Back Containers.** Add a tab named **Back Containers** on the same spreadsheet, with columns Item, WPR item name, CPR item name, Container, Full count (pieces), and Notes. The script also creates this tab if it is missing, the first time a full count is saved. Only items listed there, and only in Back, get a Container count (quarter, half, three quarters, or full, and more than one container). Pieces are the full count times the quarters, added into column K. If the full count cell is empty, the phone asks and writes that cell.
+
+**Barcode undo.** After a barcode is linked, the phone shows Undo for about 10 seconds. The menu also has Recent barcode links. Undo removes the link on the phone. On the sheet it only changes the cell this phone wrote: a brand-new row is removed, and a name that replaced an older name is put back. If someone has edited that cell since, the script leaves it alone.
+
+**Pieces by weight.** The old “how many pieces equal 10 oz?” question is now two boxes: ounces (starts at 10, and can be a decimal) and number of pieces. Column D is still pieces divided by ounces.
+
+**Front counts.** Front is loose pieces only. Bins stay as they are, with Count instead. Back and Break Room still have boxes and bags.
+
+**New month tabs.** A new month tab is inserted at the front of the workbook. The same columns are cleared as before: F, G, J, K, L, and U. Columns I and T, and every other column, stay.
 
 ## When you change the script later
 

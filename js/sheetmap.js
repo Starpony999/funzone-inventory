@@ -215,21 +215,22 @@ function round3(number) {
 }
 
 /**
- * How to fill a blank column D after staff answer "how many pieces equal 10 oz?"
+ * How to fill a blank column D after staff enter pieces and ounces.
  *
  * samples are the filled D cells already on the tab: a string starting with "="
  * is a formula, anything else that isn't blank is a plain number.
- * If at least half of those cells are formulas, write "=N/10" (the same
- * pieces-over-ounces style, using the 10 ounces they just counted).
- * Otherwise write the number N/10. A tab with nothing in column D yet gets the number.
+ * If at least half of those cells are formulas, write "=pieces/ounces".
+ * Otherwise write the number pieces/ounces. A tab with nothing in column D yet gets the number.
+ * Ounces default to 10 so older calls still divide by 10.
  */
-export function perOzWrite(piecesPer10, samples) {
+export function perOzWrite(piecesPer10, samples, ounces = 10) {
   const pieces = Number(piecesPer10);
-  const perOz = pieces / 10;
+  const oz = Number(ounces);
+  const perOz = pieces / oz;
   const filled = (samples || []).filter((cell) => cell != null && cell !== "");
   const formulas = filled.filter((cell) => typeof cell === "string" && cell.startsWith("="));
   const useFormula = filled.length > 0 && formulas.length * 2 >= filled.length;
-  if (useFormula) return { formula: "=" + String(pieces) + "/10", value: perOz };
+  if (useFormula) return { formula: "=" + String(pieces) + "/" + String(oz), value: perOz };
   return { formula: null, value: perOz };
 }
 

@@ -301,6 +301,10 @@ describe("pieces per 10 ounces", { concurrency: false }, () => {
     await whenSheetIdle();
     assert.equal(calls.filter((call) => call.action === "savePerOz").at(-1).piecesPer10, 20);
     assert.equal(getItems("WPR").find((row) => row.name.startsWith("Princess Tiara")).perOz, 2);
+    const custom = savePiecesPer10("WPR", "Princess Tiara 5in Asmt (12 in bag)", 12, 8);
+    assert.equal(custom, 1.5);
+    await whenSheetIdle();
+    assert.equal(calls.filter((call) => call.action === "savePerOz").at(-1).ounces, 8);
   });
 
   test("Don't save new items keeps the rate on the phone and skips the sheet", async () => {

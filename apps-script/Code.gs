@@ -112,6 +112,9 @@ function handle_(body) {
     if (action === "saveFullBin") return withLock_(function () { return saveMeasure_(body, 20); });
     if (action === "saveFrontCount") return withLock_(function () { return saveMeasure_(body, 9); });
     if (action === "savePackSize") return withLock_(function () { return savePackSize_(body); });
+    if (action === "saveContainer") return withLock_(function () { return saveContainer_(body); });
+    if (action === "saveBackFull") return withLock_(function () { return saveBackFull_(body); });
+    if (action === "undoBarcode") return withLock_(function () { return undoBarcode_(body); });
   } catch (err) {
     return { ok: false, error: err.code || "script-error", message: err.message || String(err) };
   }
@@ -208,7 +211,7 @@ function ensureMonth_(ss, store) {
   var copy = source.copyTo(ss);
   copy.setName(desired);
   ss.setActiveSheet(copy);
-  ss.moveActiveSheet(ss.getNumSheets());
+  ss.moveActiveSheet(1);
   clearPlainCountInputs_(copy, masks);
   SpreadsheetApp.flush();
   return copy;
@@ -280,7 +283,9 @@ function getCatalog_(body) {
     items: readItems_(sheet),
     barcodes: readBarcodes_(),
     binItems: readBinItems_(),
-    packSizes: readPackSizes_()
+    packSizes: readPackSizes_(),
+    containers: readContainers_(),
+    backContainers: readBackContainers_()
   };
 }
 
@@ -430,6 +435,163 @@ function savePackSize_(body) {
   var dest = found || Math.max(last, 1) + 1;
   sheet.getRange(dest, 1, 1, 4).setValues([[store, name, size, unit]]);
   return { ok: true, row: dest, tab: "Pack Sizes" };
+}
+
+function barcodesBook_() {
+  return SpreadsheetApp.openById(BARCODES_ID);
+}
+
+function readContainers_() {
+  var ss;
+  try { ss = barcodesBook_(); } catch (err) { return []; }
+  var sheet = ss.getSheetByName("Containers");
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    var name = String(values[i][0] || "").replace(/^\s+|\s+$/g, "");
+    if (!name) continue;
+    rows.push({
+      name: name,
+      lb: Number(values[i][1]) || 0,
+      oz: Number(values[i][2]) || 0,
+      notes: String(values[i][3] || "").replace(/^\s+|\s+$/g, "")
+    });
+  }
+  return rows;
+}
+
+function ensureContainersSheet_(ss) {
+  var sheet = ss.getSheetByName("Containers");
+  if (sheet) return sheet;
+  sheet = ss.insertSheet("Containers");
+  sheet.getRange(1, 1, 1, 4).setValues([["Container", "Empty weight lb", "Empty weight oz", "Notes"]]);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function saveContainer_(body) {
+  var name = String(body.name || "").replace(/^\s+|\s+$/g, "");
+  var lb = Number(body.lb) || 0;
+  var oz = Number(body.oz) || 0;
+  if (!name || lb < 0 || oz < 0) {
+    return { ok: false, error: "bad-container", message: "Name the container and its empty weight." };
+  }
+  var ss = barcodesBook_();
+  var sheet = ensureContainersSheet_(ss);
+  var last = sheet.getLastRow();
+  var found = 0;
+  if (last >= 2) {
+    var names = sheet.getRange(2, 1, last - 1, 1).getDisplayValues();
+    var wanted = name.toLowerCase();
+    for (var i = 0; i < names.length; i++) {
+      if (String(names[i][0] || "").replace(/^\s+|\s+$/g, "").toLowerCase() === wanted) {
+        found = i + 2;
+        break;
+      }
+    }
+  }
+  var dest = found || Math.max(last, 1) + 1;
+  sheet.getRange(dest, 1, 1, 4).setValues([[name, lb, oz, String(body.notes || "")]]);
+  return { ok: true, row: dest, name: name, lb: lb, oz: oz };
+}
+
+function readBackContainers_() {
+  var ss;
+  try { ss = barcodesBook_(); } catch (err) { return []; }
+  var sheet = ss.getSheetByName("Back Containers");
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    var wpr = String(values[i][1] || "").replace(/^\s+|\s+$/g, "");
+    var cpr = String(values[i][2] || "").replace(/^\s+|\s+$/g, "");
+    var container = String(values[i][3] || "").replace(/^\s+|\s+$/g, "");
+    if ((!wpr && !cpr) || !container) continue;
+    var full = Number(values[i][4]);
+    rows.push({
+      item: String(values[i][0] || "").replace(/^\s+|\s+$/g, ""),
+      WPR: wpr,
+      CPR: cpr,
+      container: container,
+      fullCount: isFinite(full) && full > 0 ? full : null,
+      notes: String(values[i][5] || "").replace(/^\s+|\s+$/g, "")
+    });
+  }
+  return rows;
+}
+
+function ensureBackSheet_(ss) {
+  var sheet = ss.getSheetByName("Back Containers");
+  if (sheet) return sheet;
+  sheet = ss.insertSheet("Back Containers");
+  sheet.getRange(1, 1, 1, 6).setValues([["Item", "WPR item name", "CPR item name", "Container", "Full count (pieces)", "Notes"]]);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function saveBackFull_(body) {
+  var store = body.store === "CPR" ? "CPR" : body.store === "WPR" ? "WPR" : "";
+  var name = String(body.item || "").replace(/^\s+|\s+$/g, "");
+  var container = String(body.container || "").replace(/^\s+|\s+$/g, "");
+  var pieces = Number(body.pieces);
+  if (!store || !name || !container || !isFinite(pieces) || pieces <= 0 || Math.round(pieces) !== pieces) {
+    return { ok: false, error: "bad-back", message: "Enter how many pieces fill one container." };
+  }
+  var ss = barcodesBook_();
+  var sheet = ensureBackSheet_(ss);
+  var last = sheet.getLastRow();
+  if (last < 2) return { ok: false, error: "not-on-sheet", message: "That container is not on the Back Containers tab." };
+  var values = sheet.getRange(2, 1, last - 1, 5).getValues();
+  var formulas = sheet.getRange(2, 5, last - 1, 1).getFormulas();
+  var wanted = name.toLowerCase();
+  var box = container.toLowerCase();
+  var found = -1;
+  for (var i = 0; i < values.length; i++) {
+    var label = String((store === "CPR" ? values[i][2] : values[i][1]) || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    var named = String(values[i][3] || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+    if (label === wanted && named === box) { found = i; break; }
+  }
+  if (found < 0) return { ok: false, error: "not-on-sheet", message: "That container is not on the Back Containers tab." };
+  if (formulas[found][0]) return { ok: true, skipped: "formula" };
+  sheet.getRange(found + 2, 5).setValue(pieces);
+  return { ok: true, pieces: pieces };
+}
+
+// Only the barcode cell this phone wrote. A newer edit on the sheet is left alone.
+function undoBarcode_(body) {
+  var store = body.store === "CPR" ? "CPR" : "WPR";
+  var code = String(body.code || "").replace(/[\s-]/g, "");
+  var name = String(body.name || "").replace(/^\s+|\s+$/g, "");
+  var previous = body.previousName == null ? "" : String(body.previousName);
+  var mode = body.mode === "appended" ? "appended" : "updated";
+  if (!code || !name) return { ok: false, error: "bad-barcode", message: "Missing barcode." };
+  var ss = barcodesBook_();
+  var sheet = ss.getSheetByName("Barcodes");
+  if (!sheet || sheet.getLastRow() < 2) return { ok: true, skipped: "missing" };
+  var target = normalizeCode_(code);
+  var codes = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+  var found = 0;
+  for (var i = 0; i < codes.length; i++) {
+    var existing = String(codes[i][0] || "").replace(/[\s-]/g, "");
+    if (existing && normalizeCode_(existing) === target) { found = i + 2; break; }
+  }
+  if (!found) return { ok: true, skipped: "missing" };
+  var nameCol = store === "CPR" ? 3 : 2;
+  var current = String(sheet.getRange(found, nameCol).getDisplayValue() || "").replace(/^\s+|\s+$/g, "");
+  if (current !== name) return { ok: true, skipped: "changed" };
+  if (mode === "updated") {
+    sheet.getRange(found, nameCol).setValue(previous);
+    return { ok: true, mode: "restored", row: found };
+  }
+  var otherCol = store === "CPR" ? 2 : 3;
+  var other = String(sheet.getRange(found, otherCol).getDisplayValue() || "").replace(/^\s+|\s+$/g, "");
+  if (other) {
+    sheet.getRange(found, nameCol).setValue("");
+    return { ok: true, mode: "cleared", row: found };
+  }
+  sheet.deleteRow(found);
+  return { ok: true, mode: "deleted", row: found };
 }
 
 function readBarcodes_() {
@@ -602,8 +764,9 @@ function saveBarcode_(body) {
   }
   var nameCol = store === "CPR" ? 3 : 2;
   if (found) {
+    var previousName = String(sheet.getRange(found, nameCol).getDisplayValue() || "");
     sheet.getRange(found, nameCol).setValue(name);
-    return { ok: true, mode: "updated", row: found };
+    return { ok: true, mode: "updated", row: found, previousName: previousName };
   }
   var dest = Math.max(last, 1) + 1;
   var codeCell = sheet.getRange(dest, 1);
@@ -643,8 +806,12 @@ function addItem_(body) {
 function savePerOz_(body) {
   var store = body.store === "CPR" ? "CPR" : "WPR";
   var pieces = Number(body.piecesPer10);
+  var ounces = body.ounces == null || body.ounces === "" ? 10 : Number(body.ounces);
   if (!isFinite(pieces) || pieces <= 0 || Math.round(pieces) !== pieces) {
     return { ok: false, error: "bad-per-oz", message: "Enter a whole number of pieces." };
+  }
+  if (!isFinite(ounces) || ounces <= 0) {
+    return { ok: false, error: "bad-per-oz", message: "Enter how many ounces you weighed." };
   }
   var now = storeNow_();
   var ss = openInventory_(now.year);
@@ -661,7 +828,7 @@ function savePerOz_(body) {
   if (cell.getFormula()) {
     return { ok: true, skipped: "formula", perOz: numOrNull_(cell.getValue()), tab: sheet.getName() };
   }
-  var style = perOzWrite_(pieces, sampleColumnD_(sheet));
+  var style = perOzWrite_(pieces, sampleColumnD_(sheet), ounces);
   var format = samplePerOzFormat_(sheet);
   if (format) cell.setNumberFormat(format);
   if (style.formula) cell.setFormula(style.formula);
@@ -698,7 +865,8 @@ function samplePerOzFormat_(sheet) {
   return "General";
 }
 
-function perOzWrite_(pieces, samples) {
+function perOzWrite_(pieces, samples, ounces) {
+  var oz = ounces == null ? 10 : Number(ounces);
   var filled = 0;
   var formulas = 0;
   for (var i = 0; i < samples.length; i++) {
@@ -706,8 +874,8 @@ function perOzWrite_(pieces, samples) {
     filled++;
     if (String(samples[i]).charAt(0) === "=") formulas++;
   }
-  if (filled > 0 && formulas * 2 >= filled) return { formula: "=" + pieces + "/10", value: pieces / 10 };
-  return { formula: "", value: pieces / 10 };
+  if (filled > 0 && formulas * 2 >= filled) return { formula: "=" + pieces + "/" + oz, value: pieces / oz };
+  return { formula: "", value: pieces / oz };
 }
 
 function lastItemRow_(sheet) {

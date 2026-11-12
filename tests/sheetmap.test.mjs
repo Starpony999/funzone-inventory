@@ -101,6 +101,14 @@ describe("new month count reset", () => {
     assert.match(ensure, /clearPlainCountInputs_\(copy/);
     assert.equal(ensure.includes("clearPlainCountInputs_(source"), false);
     assert.equal(ensure.includes("clearContent"), false);
+    assert.match(ensure, /moveActiveSheet\(1\)/);
+    assert.equal(ensure.includes("getNumSheets()"), false);
+    const undo = src.slice(src.indexOf("function undoBarcode_"), src.indexOf("function readBarcodes_"));
+    assert.match(undo, /current !== name/);
+    assert.match(undo, /deleteRow\(found\)/);
+    assert.match(undo, /setValue\(previous\)/);
+    assert.match(src, /"Container", "Empty weight lb", "Empty weight oz", "Notes"/);
+    assert.match(src, /"Item", "WPR item name", "CPR item name", "Container", "Full count \(pieces\)", "Notes"/);
   });
 });
 
@@ -117,6 +125,11 @@ describe("formula copy", () => {
 });
 
 describe("pieces per ounce", () => {
+  test("ounces other than 10 are stored as pieces divided by those ounces", () => {
+    const written = perOzWrite(12, ["=20/4.2"], 8);
+    assert.deepEqual(written, { formula: "=12/8", value: 1.5 });
+  });
+
   test("a formula-style tab stores =pieces/10", () => {
     const written = perOzWrite(25, ["=20/4.2", "=3/5", 1.3]);
     assert.deepEqual(written, { formula: "=25/10", value: 2.5 });

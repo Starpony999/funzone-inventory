@@ -4,7 +4,11 @@ import {
   STORES,
   addItem,
   clearSession,
+  containerPieces,
+  backOptions,
   describeEntry,
+  evalCountExpr,
+  formatLbOz,
   formatNumber,
   formatPieces,
   frontNet,
@@ -12,6 +16,7 @@ import {
   getCounts,
   catalogInfo,
   catalogNeedsRefresh,
+  getBarcodeLinks,
   getConnection,
   getItems,
   getPack,
@@ -19,14 +24,19 @@ import {
   getSheetStatus,
   getTesting,
   itemMatchesQuery,
+  lastContainer,
+  listContainers,
   lookupBarcode,
   parsePack,
   searchCatalog,
   pieces,
   plural,
+  rememberContainer,
   removeCount,
   saveBarcode,
+  saveBackFull,
   saveConnection,
+  saveContainer,
   saveCount,
   saveMeasure,
   savePackSize,
@@ -35,10 +45,12 @@ import {
   savePrefs,
   setTesting,
   sheetEnabled,
+  tareNet,
   testConnection,
   testingOn,
   totalOz,
   refreshStore,
+  undoBarcodeLink,
   whenSheetIdle,
 } from "./data.js";
 import { cameraIsOn, setOnCode, startCamera, stopCamera } from "./scanner.js";
@@ -57,6 +69,15 @@ const state = {
   nameError: "",
   ticketInput: "",
   per10: "",
+  perOzOz: "10",
+  perOzField: "pieces",
+  containerPick: "",
+  containerPicks: [],
+  backName: "",
+  newContainerName: "",
+  newContainerLb: "",
+  newContainerOz: "",
+  linkToast: null,
   item: null,
   justMatched: false,
   boxes: "",
@@ -117,14 +138,20 @@ function resetEntry() {
   state.oz = "";
   state.weightField = "lb";
   state.q1 = 0;
+  state.containerPicks = [];
+  state.backName = "";
 }
 
 function namedPack() {
   return state.item ? parsePack(state.item.name) : null;
 }
 
+function packsAllowed() {
+  return state.section !== "Front";
+}
+
 function usingBoxes() {
-  return namedPack() != null || state.showBoxes;
+  return packsAllowed() && (namedPack() != null || state.showBoxes);
 }
 
 function packSize() {
@@ -161,6 +188,7 @@ function earlierHere() {
 function render() {
   if (cameraIsOn()) stopCamera();
   app.innerHTML = shell();
+  window.scrollTo(0, 0);
   document.body.classList.toggle("modal-open", !!(state.dupDraft || state.confirmClear));
   if (state.screen === "scan") paintSuggestions();
 }
@@ -215,10 +243,17 @@ function notesHtml() {
     ${sample}`;
 }
 
+function linkToastHtml() {
+  const toast = state.linkToast;
+  if (!toast || toast.until < Date.now()) return "";
+  return `<div class="toast" role="status">Linked to ${esc(toast.name)}. <button type="button" class="btn link" data-action="undo-link" data-id="${esc(toast.id)}">Undo</button></div>`;
+}
+
 function shell() {
   return `
     <div id="statusNotes">${notesHtml()}</div>
     ${header()}
+    ${linkToastHtml()}
     ${body()}
     ${dialog()}
   `;
@@ -247,6 +282,7 @@ function header() {
       ${testingSwitch("skipCounts", "Don't save counts", flags.skipCounts)}
       ${testingSwitch("skipBarcodes", "Don't save barcodes", flags.skipBarcodes)}
       ${testingSwitch("skipItems", "Don't save new items", flags.skipItems)}
+      ${state.store ? `<button class="btn quiet" data-action="recent-links">Recent barcode links</button>` : ""}
       ${state.store ? `<button class="btn quiet" data-action="reload-sheet">Reload from sheet</button>` : ""}
       <button class="btn quiet" data-action="sheet-settings">Sheet connection</button>
     </div>` : "";
@@ -281,6 +317,13 @@ function body() {
     case "per10": return per10Screen();
     case "count": return countScreen();
     case "weight": return weightScreen();
+    case "container": return containerScreen();
+    case "new-container": return newContainerScreen();
+    case "back-type": return backTypeScreen();
+    case "back-fill": return backFillScreen();
+    case "back-full": return backFullScreen();
+    case "back-more": return backMoreScreen();
+    case "links": return linksScreen();
     case "bin":
     case "bin2": return binScreen();
     case "bin2ask": return binAskScreen();
@@ -441,17 +484,21 @@ function newTicketsScreen() {
 }
 
 function per10Screen() {
-  const ready = Number(state.per10) > 0;
+  const ounces = Number(state.perOzOz);
+  const ready = Number(state.per10) > 0 && ounces > 0;
   const held = getTesting().skipItems
     ? `<p class="small">Testing mode: this is used for the count, and it is not written to the sheet.</p>`
     : `<p class="small">This is saved on the item so it is not asked again.</p>`;
   return `
     ${backButton("Cancel")}
     ${itemBanner()}
-    <h1>How many pieces equal 10 oz?</h1>
-    <p class="sub">Count 10 ounces of ${esc(state.item ? state.item.name : "this item")}, then enter how many pieces that is.</p>
-    <div class="figure">${esc(state.per10 || "0")}</div>
-    ${numPad(false)}
+    <h1>Pieces by weight</h1>
+    <p class="sub">How many pieces are in a weighed amount of ${esc(state.item ? state.item.name : "this item")}?</p>
+    <div class="fields">
+      ${fieldButton(state.perOzField === "oz", state.perOzOz, "Ounces", "peroz")}
+      ${fieldButton(state.perOzField === "pieces", state.per10, "Pieces", "per10")}
+    </div>
+    ${numPad(state.perOzField === "oz")}
     ${held}
     <button class="btn primary save" data-action="save-per10" ${ready ? "" : "disabled"}>Continue</button>`;
 }
@@ -487,7 +534,11 @@ function itemBanner() {
 
 function kindScreen() {
   const named = namedPack();
-  const countSide = named ? plural(named.word) + " + loose" : "pieces";
+  const countSide = state.section === "Front" || !named ? "pieces" : plural(named.word) + " + loose";
+  const backs = state.item ? backOptions(state.store, state.item.name) : [];
+  const container = state.section === "Back" && backs.length
+    ? `<button class="btn" data-action="kind-container"><span>Container</span><span class="side">how full</span></button>`
+    : "";
   return `
     ${backButton("Scan again")}
     ${itemBanner()}
@@ -495,6 +546,7 @@ function kindScreen() {
     <div class="stack" style="margin-top:12px">
       <button class="btn" data-action="kind-count"><span>Item count</span><span class="side">${esc(countSide)}</span></button>
       <button class="btn" data-action="kind-weight"><span>Weight</span><span class="side">lb + oz</span></button>
+      ${container}
     </div>`;
 }
 
@@ -518,33 +570,54 @@ function fieldButton(active, value, label, field) {
     </button>`;
 }
 
-function numPad(allowDot) {
-  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", allowDot ? "." : "", "0", "del"];
-  return `<div class="pad">${keys.map((key) => (
+function numPad(allowDot, math) {
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", allowDot || math ? "." : "", "0", "del"];
+  const ops = math ? ["+", "-", "x", "/", "(", ")"] : [];
+  const button = (key) => (
     key === ""
       ? "<div></div>"
-      : `<button type="button" data-action="pad" data-key="${key === "del" ? "del" : esc(key)}">${key === "del" ? "⌫" : esc(key)}</button>`
-  )).join("")}</div>`;
+      : `<button type="button" data-action="pad" data-key="${key === "del" ? "del" : esc(key)}">${key === "del" ? "⌫" : key === "x" ? "×" : esc(key)}</button>`
+  );
+  return `<div class="pad">${keys.map(button).join("")}</div>${ops.length ? `<div class="pad ops">${ops.map(button).join("")}</div>` : ""}`;
+}
+
+function exprLive(text) {
+  const parsed = evalCountExpr(text);
+  if (!parsed.ok || parsed.empty) return "";
+  return "= " + formatNumber(parsed.value);
+}
+
+function exprNumber(text) {
+  if (!String(text ?? "").trim()) return 0;
+  const parsed = evalCountExpr(text);
+  return parsed.ok ? parsed.value : null;
 }
 
 function countScreen() {
   const named = namedPack();
   const using = usingBoxes();
-  const size = packSize();
+  const nBoxes = exprNumber(state.boxes);
+  const nLoose = exprNumber(state.loose);
+  const nPer = exprNumber(state.per);
+  const size = named ? packSize() : (using ? nPer : 0);
   const word = packWord();
-  const nBoxes = Number(state.boxes || 0);
-  const nLoose = Number(state.loose || 0);
-  const total = (using ? nBoxes * size : 0) + nLoose;
-  const canSave = using
+  const ready = nBoxes != null && nLoose != null && (!using || named || nPer != null);
+  const total = ready ? (using ? nBoxes * size : 0) + nLoose : null;
+  const canSave = ready && (using
     ? (nBoxes > 0 && size > 0) || nLoose > 0 || state.loose === "0"
-    : state.loose !== "";
+    : state.loose !== "");
+  const looseLive = exprLive(state.loose);
+  const boxLive = exprLive(state.boxes);
+  const perLive = exprLive(state.per);
+  const activeLive = state.countField === "boxes" ? boxLive : state.countField === "per" ? perLive : looseLive;
   const perField = !named && using
     ? `
       <div class="unit-row" role="group" aria-label="Box or bag">
         <button type="button" class="btn ${state.packUnit === "bag" ? "" : "selected"}" data-action="pack-unit" data-unit="box" aria-pressed="${state.packUnit === "bag" ? "false" : "true"}">Box</button>
         <button type="button" class="btn ${state.packUnit === "bag" ? "selected" : ""}" data-action="pack-unit" data-unit="bag" aria-pressed="${state.packUnit === "bag" ? "true" : "false"}">Bag</button>
       </div>
-      ${fieldButton(state.countField === "per", state.per, "How many in a pack", "per")}`
+      ${fieldButton(state.countField === "per", state.per, "How many in a pack", "per")}
+      ${state.countField === "per" && perLive ? `<p class="math">${esc(perLive)}</p>` : ""}`
     : "";
   const editor = using
     ? `
@@ -553,16 +626,20 @@ function countScreen() {
         ${fieldButton(state.countField === "boxes", state.boxes, "Full " + plural(word) + (size ? " (" + formatNumber(size) + " each)" : ""), "boxes")}
         ${fieldButton(state.countField === "loose", state.loose, "Loose", "loose")}
       </div>
-      <div class="math">${esc(formatNumber(nBoxes))} × ${esc(formatNumber(size))} + ${esc(formatNumber(nLoose))} = <strong>${esc(formatNumber(total))} pcs</strong></div>`
+      ${activeLive && state.countField !== "per" ? `<p class="math">${esc(activeLive)}</p>` : ""}
+      <div class="math">${total == null ? "Finish the math" : esc(formatNumber(nBoxes)) + " × " + esc(formatNumber(size)) + " + " + esc(formatNumber(nLoose)) + " = <strong>" + esc(formatNumber(total)) + " pcs</strong>"}</div>`
     : `
       <div class="muted">How many pieces?</div>
-      <div class="figure">${esc(state.loose || "0")}</div>
-      <div class="center"><button class="btn link" data-action="use-boxes">Counting packs?</button></div>`;
+      <div class="figure" id="exprFigure">${esc(state.loose || "0")}</div>
+      <p class="math" id="exprLive">${looseLive ? esc(looseLive) : ""}</p>
+      <input id="countExpr" class="expr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Or type 3 x 6" value="${esc(state.loose)}">
+      ${total == null ? "" : `<div class="math" id="exprTotal"><strong>${esc(formatNumber(total))} pcs</strong></div>`}
+      ${packsAllowed() ? `<div class="center"><button class="btn link" data-action="use-boxes">Counting packs?</button></div>` : ""}`;
   return `
     ${backButton("Back")}
     ${itemBanner()}
     ${editor}
-    ${numPad(false)}
+    ${numPad(false, true)}
     <button class="btn primary save" data-action="save-count" ${canSave ? "" : "disabled"}>${state.editingId != null ? "Update" : "Save"}</button>`;
 }
 
@@ -585,7 +662,134 @@ function weightScreen() {
     </div>
     <div class="math">${esc(formatNumber(ounces))} oz${esc(rate)}${result}</div>
     ${numPad(state.weightField === "oz")}
-    <button class="btn primary save" data-action="save-weight" ${canSave ? "" : "disabled"}>${state.editingId != null ? "Update" : "Save"}</button>`;
+    <button class="btn primary save" data-action="save-weight" ${canSave ? "" : "disabled"}>Continue</button>`;
+}
+
+function containerScreen() {
+  const list = listContainers();
+  const picked = state.containerPick;
+  const chosen = list.find((row) => row.name === picked);
+  const grossLb = Number(state.lb || 0);
+  const grossOz = Number(state.oz || 0);
+  let math = "No container. The weight is saved as entered.";
+  let warn = "";
+  let canSave = true;
+  if (chosen) {
+    const net = tareNet(grossLb, grossOz, chosen.lb, chosen.oz);
+    if (!net.ok) {
+      math = "";
+      warn = "That container weighs more than the scale. Pick another container, or go back and check the weight.";
+      canSave = false;
+    } else {
+      math = formatLbOz(grossLb, grossOz) + " minus " + chosen.name + " " + formatLbOz(chosen.lb, chosen.oz) + " = " + formatLbOz(net.lb, net.oz);
+    }
+  }
+  const rows = [
+    `<button class="btn ${picked === "" ? "selected" : ""}" data-action="pick-container" data-name=""><span>No container</span></button>`,
+    ...list.map((row) => `<button class="btn ${picked === row.name ? "selected" : ""}" data-action="pick-container" data-name="${esc(row.name)}"><span>${esc(row.name)}</span><span class="side">${esc(formatLbOz(row.lb, row.oz))}</span></button>`),
+    `<button class="btn" data-action="new-container"><span>+ New container</span></button>`,
+  ];
+  return `
+    ${backButton("Back")}
+    ${itemBanner()}
+    <h1 class="tight">Which container?</h1>
+    <p class="sub">The empty weight is taken off before the count is saved.</p>
+    <div class="stack">${rows.join("")}</div>
+    ${math ? `<div class="math">${esc(math)}</div>` : ""}
+    ${warn ? `<p class="warn">${esc(warn)}</p>` : ""}
+    <button class="btn primary save" data-action="save-container-choice" ${canSave ? "" : "disabled"}>Save weight</button>`;
+}
+
+function newContainerScreen() {
+  const name = state.newContainerName.trim();
+  const ready = name && (state.newContainerLb !== "" || state.newContainerOz !== "");
+  return `
+    ${backButton("Back")}
+    <h1>New container</h1>
+    <p class="sub">Name it and enter how much it weighs empty.</p>
+    <label class="field-label" for="containerName">Name</label>
+    <input id="containerName" type="text" autocomplete="off" placeholder="Bucket" value="${esc(state.newContainerName)}">
+    <div class="fields">
+      ${fieldButton(state.weightField === "lb", state.newContainerLb, "Empty lb", "clb")}
+      ${fieldButton(state.weightField === "oz", state.newContainerOz, "Empty oz", "coz")}
+    </div>
+    ${numPad(state.weightField === "oz")}
+    <button class="btn primary save" data-action="save-new-container" ${ready ? "" : "disabled"}>Save container</button>`;
+}
+
+function currentBackOptions() {
+  return state.item ? backOptions(state.store, state.item.name) : [];
+}
+
+function backTypeScreen() {
+  const rows = currentBackOptions().map((row) => `
+    <button class="btn" data-action="back-type" data-name="${esc(row.container)}">
+      <span>${esc(row.container)}</span>
+      <span class="side">${row.fullCount ? esc(formatNumber(row.fullCount)) + " full" : "full count needed"}</span>
+    </button>`).join("");
+  return `
+    ${backButton("Back")}
+    ${itemBanner()}
+    <h1 class="tight">Which container?</h1>
+    <div class="stack">${rows}</div>`;
+}
+
+function backFillScreen() {
+  const buttons = BIN_WORDS.map((bin) => `
+    <button class="btn bin" data-action="back-q" data-q="${bin.q}">
+      <div class="jar" aria-hidden="true"><span style="height:${bin.q * 25}%"></span></div>
+      <span>${esc(bin.word)}</span>
+    </button>`).join("");
+  return `
+    ${backButton("Back")}
+    ${itemBanner()}
+    <h1 class="tight">How full is the ${esc(state.backName)}?</h1>
+    <div class="bins">${buttons}</div>`;
+}
+
+function backFullScreen() {
+  const ready = Number(state.measureInput) > 0;
+  const held = getTesting().skipItems
+    ? `<p class="small">Testing mode: this is used for the count, and it is not written to the sheet.</p>`
+    : `<p class="small">This is saved on the Back Containers tab so it is not asked again.</p>`;
+  return `
+    ${backButton("Cancel")}
+    ${itemBanner()}
+    <h1>How many pieces fill one ${esc(state.backName)}?</h1>
+    <div class="figure">${esc(state.measureInput || "0")}</div>
+    ${numPad(false)}
+    ${held}
+    <button class="btn primary save" data-action="save-back-full" ${ready ? "" : "disabled"}>Continue</button>`;
+}
+
+function backMoreScreen() {
+  const lines = state.containerPicks.map((row) => formatBin(row.q) + " " + row.name + " = " + formatNumber(row.pieces) + " pcs");
+  const total = state.containerPicks.reduce((sum, row) => sum + row.pieces, 0);
+  return `
+    ${backButton("Back")}
+    ${itemBanner()}
+    <h1 class="tight">Another container?</h1>
+    <div class="math">${esc(lines.join(" + "))}<br><strong>${esc(formatNumber(total))} pcs</strong></div>
+    <div class="stack">
+      <button class="btn" data-action="back-another">Another container</button>
+      <button class="btn primary" data-action="back-done">Done</button>
+    </div>`;
+}
+
+function linksScreen() {
+  const links = getBarcodeLinks();
+  const rows = links.length
+    ? links.map((link) => `
+      <div class="link-row">
+        <div><strong>${esc(link.name)}</strong><div class="small">${esc(link.code)}${link.undone ? " · undone" : ""}</div></div>
+        ${link.undone ? "" : `<button class="btn quiet" data-action="undo-link" data-id="${esc(link.id)}">Undo</button>`}
+      </div>`).join("")
+    : `<p class="sub">No barcode links from this phone yet.</p>`;
+  return `
+    ${backButton("Back")}
+    <h1>Recent barcode links</h1>
+    <p class="sub">The last links saved on this phone. Undo removes the link here and on the barcode sheet.</p>
+    ${rows}`;
 }
 
 function binScreen() {
@@ -925,7 +1129,7 @@ function handleCode(raw, format) {
 function chooseItem(name) {
   const item = getItems(state.store).find((candidate) => candidate.name === name);
   if (!item) return;
-  saveBarcode(state.pendingCode, state.store, item.name, { pending: !!item.pending });
+  showLinkToast(saveBarcode(state.pendingCode, state.store, item.name, { pending: !!item.pending }));
   state.item = item;
   state.justMatched = true;
   state.nameError = "";
@@ -965,7 +1169,7 @@ function saveNewProduct() {
     render();
     return;
   }
-  saveBarcode(state.pendingCode, state.store, item.name, { pending: true });
+  showLinkToast(saveBarcode(state.pendingCode, state.store, item.name, { pending: true }));
   state.item = getItems(state.store).find((row) => row.name === item.name) || item;
   state.justMatched = true;
   landOnItem();
@@ -973,8 +1177,9 @@ function saveNewProduct() {
 
 function savePer10() {
   const pieces = Number(state.per10);
-  if (!Number.isSafeInteger(pieces) || pieces <= 0 || !state.item || !state.store) return;
-  const perOz = savePiecesPer10(state.store, state.item.name, pieces);
+  const ounces = Number(state.perOzOz);
+  if (!Number.isSafeInteger(pieces) || pieces <= 0 || !(ounces > 0) || !state.item || !state.store) return;
+  const perOz = savePiecesPer10(state.store, state.item.name, pieces, ounces);
   if (perOz == null) return;
   state.item = { ...state.item, perOz };
   state.lb = "";
@@ -986,8 +1191,8 @@ function savePer10() {
 
 function startCount() {
   resetEntry();
-  const named = namedPack();
-  const custom = state.store && state.item ? getPack(state.store, state.item.name) : null;
+  const named = packsAllowed() ? namedPack() : null;
+  const custom = packsAllowed() && state.store && state.item ? getPack(state.store, state.item.name) : null;
   if (named) {
     state.packUnit = named.word === "bag" ? "bag" : "box";
     state.countField = "boxes";
@@ -1001,6 +1206,114 @@ function startCount() {
   }
   state.screen = "count";
   render();
+}
+
+let linkTimer = 0;
+
+function showLinkToast(saved) {
+  if (!saved || !saved.linkId) return;
+  state.linkToast = { id: saved.linkId, name: saved.name, until: Date.now() + 10000 };
+  clearTimeout(linkTimer);
+  linkTimer = setTimeout(() => {
+    if (state.linkToast && state.linkToast.id === saved.linkId) {
+      state.linkToast = null;
+      render();
+    }
+  }, 10000);
+}
+
+function undoLink(id) {
+  undoBarcodeLink(id);
+  if (state.linkToast && state.linkToast.id === id) state.linkToast = null;
+  render();
+}
+
+function openContainers() {
+  const remembered = state.item ? lastContainer(state.store, state.item.name) : "";
+  state.containerPick = listContainers().some((row) => row.name === remembered) ? remembered : "";
+  state.screen = "container";
+  render();
+}
+
+function saveContainerChoice() {
+  const chosen = listContainers().find((row) => row.name === state.containerPick);
+  const grossLb = Number(state.lb || 0);
+  const grossOz = Number(state.oz || 0);
+  let lb = grossLb;
+  let oz = grossOz;
+  const extra = {};
+  if (chosen) {
+    const net = tareNet(grossLb, grossOz, chosen.lb, chosen.oz);
+    if (!net.ok) return;
+    lb = net.lb;
+    oz = net.oz;
+    extra.container = chosen.name;
+    extra.tareLb = chosen.lb;
+    extra.tareOz = chosen.oz;
+    extra.grossLb = grossLb;
+    extra.grossOz = grossOz;
+  }
+  if (state.item) rememberContainer(state.store, state.item.name, chosen ? chosen.name : "");
+  saveDraft({ kind: "weight", lb, oz, ...extra });
+}
+
+function saveNewContainer() {
+  const saved = saveContainer(state.newContainerName, Number(state.newContainerLb || 0), Number(state.newContainerOz || 0));
+  if (!saved) return;
+  state.containerPick = saved.name;
+  state.newContainerName = "";
+  state.newContainerLb = "";
+  state.newContainerOz = "";
+  state.screen = "container";
+  render();
+}
+
+function startBackContainers() {
+  state.containerPicks = [];
+  const options = currentBackOptions();
+  if (!options.length) return;
+  if (options.length === 1) {
+    state.backName = options[0].container;
+    state.screen = "back-fill";
+  } else {
+    state.backName = "";
+    state.screen = "back-type";
+  }
+  render();
+}
+
+function addBackPiece(name, full, quarters) {
+  const count = containerPieces(full, quarters);
+  if (count == null) return;
+  state.containerPicks = [...state.containerPicks, { name, q: quarters, pieces: count }];
+  state.screen = "back-more";
+  render();
+}
+
+function chooseBackQuarter(quarters) {
+  const opt = currentBackOptions().find((row) => row.container === state.backName);
+  if (!opt) return;
+  if (!opt.fullCount) {
+    state.pendingQ = quarters;
+    state.measureInput = "";
+    state.screen = "back-full";
+    render();
+    return;
+  }
+  addBackPiece(opt.container, opt.fullCount, quarters);
+}
+
+function saveBackFullCount() {
+  const pieces = Number(state.measureInput);
+  if (!Number.isSafeInteger(pieces) || pieces <= 0 || !state.item) return;
+  saveBackFull(state.store, state.item.name, state.backName, pieces);
+  addBackPiece(state.backName, pieces, state.pendingQ);
+}
+
+function doneBack() {
+  const total = state.containerPicks.reduce((sum, row) => sum + row.pieces, 0);
+  const note = state.containerPicks.map((row) => formatBin(row.q) + " " + row.name).join(" + ") + " = " + formatNumber(total) + " pcs";
+  saveDraft({ kind: "count", count: total, loose: total, containerNote: note });
 }
 
 function saveDraft(partial) {
@@ -1088,19 +1401,21 @@ function saveMeasureScreen() {
 }
 
 function countTotal() {
-  const size = packSize();
-  const nBoxes = Number(state.boxes || 0);
-  const nLoose = Number(state.loose || 0);
+  const size = usingBoxes() ? (namedPack() ? packSize() : exprNumber(state.per)) : 0;
+  const nBoxes = exprNumber(state.boxes);
+  const nLoose = exprNumber(state.loose);
+  if (nLoose == null || nBoxes == null || (usingBoxes() && !namedPack() && size == null)) return null;
   if (usingBoxes() && nBoxes > 0 && size > 0) return nBoxes * size + nLoose;
   return nLoose;
 }
 
 function countPayload(count, extra) {
-  const size = packSize();
-  const nBoxes = Number(state.boxes || 0);
-  const nLoose = Number(state.loose || 0);
+  const named = namedPack();
+  const size = usingBoxes() ? (named ? packSize() : exprNumber(state.per)) : 0;
+  const nBoxes = exprNumber(state.boxes) || 0;
+  const nLoose = exprNumber(state.loose) || 0;
   const packed = usingBoxes() && nBoxes > 0 && size > 0;
-  if (packed && !namedPack() && state.store && state.item) {
+  if (packed && !named && state.store && state.item) {
     savePackSize(state.store, state.item.name, size, packWord());
   }
   return {
@@ -1114,6 +1429,7 @@ function countPayload(count, extra) {
 
 function saveCountScreen() {
   const total = countTotal();
+  if (total == null) return;
   if (state.countInstead && isFrontBin()) {
     state.gross = total;
     state.screen = "front-full";
@@ -1132,18 +1448,35 @@ function saveFrontAdjusted(net, frontCount) {
 }
 
 function padPress(key) {
-  const allowDot = state.screen === "weight" && state.weightField === "oz";
+  const countMath = state.screen === "count";
+  let allowDot = (state.screen === "weight" && state.weightField === "oz")
+    || (state.screen === "per10" && state.perOzField === "oz")
+    || (state.screen === "new-container" && state.weightField === "oz")
+    || countMath;
   let value = "";
   let set = () => {};
   if (state.screen === "new-tickets") {
     value = state.ticketInput;
     set = (next) => { state.ticketInput = next; };
   } else if (state.screen === "per10") {
-    value = state.per10;
-    set = (next) => { state.per10 = next; };
-  } else if (state.screen === "measure") {
+    if (state.perOzField === "oz") {
+      value = state.perOzOz;
+      set = (next) => { state.perOzOz = next; };
+    } else {
+      value = state.per10;
+      set = (next) => { state.per10 = next; };
+    }
+  } else if (state.screen === "measure" || state.screen === "back-full") {
     value = state.measureInput;
     set = (next) => { state.measureInput = next; };
+  } else if (state.screen === "new-container") {
+    if (state.weightField === "lb") {
+      value = state.newContainerLb;
+      set = (next) => { state.newContainerLb = next; };
+    } else {
+      value = state.newContainerOz;
+      set = (next) => { state.newContainerOz = next; };
+    }
   } else if (state.screen === "weight") {
     if (state.weightField === "lb") {
       value = state.lb;
@@ -1162,13 +1495,18 @@ function padPress(key) {
     value = state.loose;
     set = (next) => { state.loose = next; };
   }
+  const mathKey = "+-x/()".includes(key);
   if (key === "del") set(value.slice(0, -1));
   else if (key === ".") {
-    if (!allowDot || value.includes(".")) return;
+    if (!allowDot || (!countMath && value.includes("."))) return;
     set((value || "0") + ".");
+  } else if (mathKey) {
+    if (!countMath || value.length >= 24) return;
+    set(value + key);
   } else {
-    if (value.length >= 6) return;
-    set(value === "0" ? key : value + key);
+    const limit = countMath ? 24 : 6;
+    if (value.length >= limit) return;
+    set(!countMath && value === "0" ? key : value + key);
   }
   render();
 }
@@ -1178,6 +1516,12 @@ function backTarget() {
   if (state.screen === "new-confirm") return "new-name";
   if (state.screen === "new-tickets") return "new-confirm";
   if (state.screen === "per10") return "kind";
+  if (state.screen === "container") return "weight";
+  if (state.screen === "new-container") return "container";
+  if (state.screen === "back-full") return "back-fill";
+  if (state.screen === "back-fill") return state.containerPicks.length ? "back-more" : (currentBackOptions().length > 1 ? "back-type" : "kind");
+  if (state.screen === "back-type" || state.screen === "back-more") return "kind";
+  if (state.screen === "links") return state.screenBeforeSettings || "scan";
   if (state.screen === "measure") return state.measure === "front" ? "front-full" : "bin";
   if (state.screen === "front-full") return "count";
   if (state.screen === "pick" || state.screen === "kind") return "scan";
@@ -1224,19 +1568,20 @@ function startEdit(id) {
   if (entry.kind === "count") {
     state.countInstead = entry.frontFull === true || entry.frontFull === false;
     if (entry.packWord === "bag" || entry.packWord === "box") state.packUnit = entry.packWord;
-    const named = parsePack(state.item.name);
+    const named = packsAllowed() ? parsePack(state.item.name) : null;
     state.loose = entry.loose !== undefined && entry.loose !== null ? String(entry.loose) : String(entry.count ?? "");
-    if (entry.boxes) state.boxes = String(entry.boxes);
-    if (!named && entry.perBox) {
+    if (named && entry.boxes) state.boxes = String(entry.boxes);
+    if (!named && packsAllowed() && entry.perBox) {
       state.per = String(entry.perBox);
       state.showBoxes = true;
+      if (entry.boxes) state.boxes = String(entry.boxes);
     }
-    state.countField = named || entry.perBox ? "boxes" : "loose";
+    state.countField = named || (packsAllowed() && entry.perBox) ? "boxes" : "loose";
     state.screen = "count";
   } else if (entry.kind === "weight") {
     if (entry.perOz && !state.item.perOz) state.item = { ...state.item, perOz: entry.perOz };
-    state.lb = String(entry.lb ?? "");
-    state.oz = String(entry.oz ?? "");
+    state.lb = String(entry.grossLb != null ? entry.grossLb : (entry.lb ?? ""));
+    state.oz = String(entry.grossOz != null ? entry.grossOz : (entry.oz ?? ""));
     state.screen = "weight";
   } else {
     state.screen = "bin";
@@ -1374,6 +1719,8 @@ function onClick(event) {
     case "kind-weight":
       if (!state.item || !state.item.perOz) {
         state.per10 = "";
+        state.perOzOz = "10";
+        state.perOzField = "pieces";
         state.screen = "per10";
       } else {
         state.lb = "";
@@ -1383,6 +1730,9 @@ function onClick(event) {
       }
       render();
       break;
+    case "kind-container":
+      startBackContainers();
+      break;
     case "save-per10":
       savePer10();
       break;
@@ -1391,7 +1741,10 @@ function onClick(event) {
       render();
       break;
     case "field":
-      if (state.screen === "weight") state.weightField = button.dataset.field;
+      if (button.dataset.field === "lb" || button.dataset.field === "oz" || button.dataset.field === "clb" || button.dataset.field === "coz") {
+        state.weightField = button.dataset.field === "oz" || button.dataset.field === "coz" ? "oz" : "lb";
+      } else if (button.dataset.field === "peroz") state.perOzField = "oz";
+      else if (button.dataset.field === "per10") state.perOzField = "pieces";
       else state.countField = button.dataset.field;
       render();
       break;
@@ -1433,7 +1786,51 @@ function onClick(event) {
       saveMeasureScreen();
       break;
     case "save-weight":
-      saveDraft({ kind: "weight", lb: Number(state.lb || 0), oz: Number(state.oz || 0) });
+      openContainers();
+      break;
+    case "pick-container":
+      state.containerPick = button.dataset.name || "";
+      render();
+      break;
+    case "new-container":
+      state.newContainerName = "";
+      state.newContainerLb = "";
+      state.newContainerOz = "";
+      state.weightField = "lb";
+      state.screen = "new-container";
+      render();
+      break;
+    case "save-new-container":
+      saveNewContainer();
+      break;
+    case "save-container-choice":
+      saveContainerChoice();
+      break;
+    case "back-type":
+      state.backName = button.dataset.name || "";
+      state.screen = "back-fill";
+      render();
+      break;
+    case "back-q":
+      chooseBackQuarter(Number(button.dataset.q));
+      break;
+    case "save-back-full":
+      saveBackFullCount();
+      break;
+    case "back-another":
+      state.screen = currentBackOptions().length > 1 ? "back-type" : "back-fill";
+      render();
+      break;
+    case "back-done":
+      doneBack();
+      break;
+    case "recent-links":
+      state.menuOpen = false;
+      state.screen = "links";
+      render();
+      break;
+    case "undo-link":
+      undoLink(button.dataset.id);
       break;
     case "bin":
       chooseQuarter(Number(button.dataset.q));
@@ -1491,6 +1888,26 @@ function onClick(event) {
 }
 
 function onInput(event) {
+  if (event.target.id === "countExpr") {
+    state.loose = event.target.value;
+    const fig = document.getElementById("exprFigure");
+    const live = document.getElementById("exprLive");
+    const shown = exprLive(state.loose);
+    if (fig) fig.textContent = state.loose || "0";
+    if (live) live.textContent = shown;
+    const totalEl = document.getElementById("exprTotal");
+    const save = document.querySelector('[data-action="save-count"]');
+    const total = countTotal();
+    if (totalEl) totalEl.textContent = total == null ? "" : formatNumber(total) + " pcs";
+    if (save) save.disabled = state.loose === "" || total == null;
+    return;
+  }
+  if (event.target.id === "containerName") {
+    state.newContainerName = event.target.value;
+    const save = document.querySelector('[data-action="save-new-container"]');
+    if (save) save.disabled = !state.newContainerName.trim() || (state.newContainerLb === "" && state.newContainerOz === "");
+    return;
+  }
   if (event.target.id === "typed") {
     state.typed = event.target.value;
     paintSuggestions();

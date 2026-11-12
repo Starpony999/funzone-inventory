@@ -19,7 +19,7 @@
  */
 
 import { SCRIPT_URL } from "./config.js";
-import { countSheetDelta, entryAmount } from "./sheetmap.js";
+import { countSheetDelta, entryAmount, splitOunces } from "./sheetmap.js";
 
 export const STORES = [
   { id: "WPR", name: "Wentzville" },
@@ -125,6 +125,10 @@ const KEYS = {
   perOz: "fz-per-oz",
   binItems: "fz-bin-items",
   measures: "fz-measures",
+  containers: "fz-containers",
+  backContainers: "fz-back-containers",
+  lastContainer: "fz-last-container",
+  barcodeLinks: "fz-barcode-links",
 };
 
 const mem = {
@@ -138,6 +142,9 @@ const mem = {
   perOz: null,
   binItems: undefined,
   measures: null,
+  containers: null,
+  backContainers: null,
+  links: null,
 };
 
 const ZERO_AMOUNT = { pieces: 0, ounces: 0, quarters: 0 };
@@ -273,6 +280,7 @@ function readMeasures() {
     mem.measures = {
       fullBin: saved.fullBin && typeof saved.fullBin === "object" ? saved.fullBin : {},
       front: saved.front && typeof saved.front === "object" ? saved.front : {},
+      back: saved.back && typeof saved.back === "object" ? saved.back : {},
     };
   }
   return mem.measures;
@@ -379,13 +387,16 @@ function jobKey(job) {
     return "measure:" + job.action + ":" + job.store + ":" + job.item;
   }
   if (job.action === "savePackSize") return "pack:" + job.store + ":" + job.item;
+  if (job.action === "saveContainer") return "container:" + String(job.name || "").toLowerCase();
+  if (job.action === "saveBackFull") return "backfull:" + job.store + ":" + job.item + ":" + job.container;
+  if (job.action === "undoBarcode") return "undo:" + job.store + ":" + job.code;
   return "job:" + job.id;
 }
 
 function publicPayload(action, body) {
   const payload = { action };
   for (const [key, value] of Object.entries(body || {})) {
-    if (key === "action" || key === "id" || key === "entryId" || key === "undo") continue;
+    if (key === "action" || key === "id" || key === "entryId" || key === "undo" || key === "linkId") continue;
     payload[key] = value;
   }
   return payload;
@@ -509,7 +520,10 @@ function markEntry(entryId, sync, extra) {
 function markJobDone(job, result) {
   if (job.action === "applyCount") reconcileCount(job, result || {});
   if (job.action === "addItem") clearItemPending(job.store, job.name);
-  if (job.action === "saveBarcode") clearBarcodePending(job.store, job.code);
+  if (job.action === "saveBarcode") {
+    clearBarcodePending(job.store, job.code);
+    noteBarcodeSynced(job.linkId, result);
+  }
   const status = getSheetStatus();
   setSheetStatus({ error: "", message: status.tab ? status.message : "", okAt: Date.now() });
 }
@@ -568,6 +582,11 @@ function enqueue(job) {
         existing.size = job.size;
         existing.unit = job.unit;
       }
+      if (job.action === "saveContainer") {
+        existing.lb = job.lb;
+        existing.oz = job.oz;
+      }
+      if (job.action === "saveBackFull") existing.pieces = job.pieces;
       writeOutbox(box);
       schedulePump();
       return;
@@ -682,6 +701,8 @@ async function refreshStoreNow(store) {
     }
     if (Array.isArray(data.binItems)) applyBinItems(data.binItems);
     if (Array.isArray(data.packSizes)) applyPackSizes(data.packSizes);
+    if (Array.isArray(data.containers)) applyContainers(data.containers);
+    if (Array.isArray(data.backContainers)) applyBackContainers(data.backContainers);
     setSheetStatus({ error: "", message: "", tab: data.tab || "", okAt: Date.now() });
     queueUnsynced();
     await whenSheetIdle();
@@ -827,6 +848,76 @@ export function totalOz(lb, oz) {
   return Math.round((Number(lb || 0) * 16 + Number(oz || 0)) * 10) / 10;
 }
 
+export function formatLbOz(lb, oz) {
+  const pounds = Math.round((Number(lb) || 0) * 10) / 10;
+  const ounces = Math.round((Number(oz) || 0) * 10) / 10;
+  return pounds + " lb " + ounces + " oz";
+}
+
+// Gross weight minus the empty container. A negative result is not saved.
+export function tareNet(lb, oz, tareLb, tareOz) {
+  const gross = totalOz(lb, oz);
+  const tare = totalOz(tareLb, tareOz);
+  const net = Math.round((gross - tare) * 10) / 10;
+  if (net < 0) return { ok: false, gross, tare, net };
+  const split = splitOunces(net);
+  return { ok: true, gross, tare, net, lb: split.lb, oz: split.oz };
+}
+
+// Simple count math: 3 x 6, 3*6, 18+4, (3x6)+2. Nothing else is allowed.
+export function evalCountExpr(input) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return { ok: true, empty: true, value: 0 };
+  const text = raw.toLowerCase().replace(/×/g, "*").replace(/x/g, "*").replace(/÷/g, "/").replace(/\s+/g, "");
+  if (!/^[\d.+\-*/()]+$/.test(text)) return { ok: false, empty: false, value: null };
+  let i = 0;
+  function peek() { return text[i]; }
+  function parseExpr() {
+    let value = parseTerm();
+    while (peek() === "+" || peek() === "-") {
+      const op = text[i++];
+      const right = parseTerm();
+      value = op === "+" ? value + right : value - right;
+    }
+    return value;
+  }
+  function parseTerm() {
+    let value = parseFactor();
+    while (peek() === "*" || peek() === "/") {
+      const op = text[i++];
+      const right = parseFactor();
+      if (op === "/" && right === 0) throw new Error("div0");
+      value = op === "*" ? value * right : value / right;
+    }
+    return value;
+  }
+  function parseFactor() {
+    if (peek() === "+") { i++; return parseFactor(); }
+    if (peek() === "-") { i++; return -parseFactor(); }
+    if (peek() === "(") {
+      i++;
+      const value = parseExpr();
+      if (peek() !== ")") throw new Error("paren");
+      i++;
+      return value;
+    }
+    const start = i;
+    if (peek() === ".") i++;
+    while (i < text.length && /[\d.]/.test(text[i])) i++;
+    if (start === i) throw new Error("num");
+    const num = Number(text.slice(start, i));
+    if (!Number.isFinite(num)) throw new Error("num");
+    return num;
+  }
+  try {
+    const value = parseExpr();
+    if (i !== text.length || !Number.isFinite(value)) return { ok: false, empty: false, value: null };
+    return { ok: true, empty: false, value: Math.round(value * 1000) / 1000 };
+  } catch {
+    return { ok: false, empty: false, value: null };
+  }
+}
+
 // Final piece count for one entry. Weight uses round((lb*16+oz)*piecesPerOz).
 export function pieces(e) {
   if (!e) return null;
@@ -844,6 +935,7 @@ export function describeEntry(e) {
     if (e.frontFull === false && e.frontCount != null && e.gross != null) {
       return "Count " + formatNumber(e.gross) + " − front " + formatNumber(e.frontCount) + " = " + formatNumber(e.count);
     }
+    if (e.containerNote) return e.containerNote;
     if (e.boxes && e.perBox) {
       const w = e.packWord || "box";
       return formatNumber(e.boxes) + " " + (e.boxes === 1 ? w : plural(w)) + " × " + formatNumber(e.perBox) + " + " + formatNumber(e.loose || 0) + " loose";
@@ -851,6 +943,10 @@ export function describeEntry(e) {
     return "Counted";
   }
   if (e.kind === "weight") {
+    const net = formatLbOz(e.lb, e.oz);
+    if (e.container) {
+      return formatLbOz(e.grossLb, e.grossOz) + " minus " + e.container + " " + formatLbOz(e.tareLb, e.tareOz) + " = " + net;
+    }
     const t = totalOz(e.lb || 0, e.oz || 0);
     return String(e.lb || 0) + " lb " + String(e.oz || 0) + " oz = " + formatNumber(t) + " oz" + (e.perOz ? "" : " (no per-oz value yet)");
   }
@@ -1002,6 +1098,13 @@ export function saveBarcode(code, store, itemName, options = {}) {
   if (options.pending || !send) row.pending = true;
   learned[store + ":" + normalized] = row;
   writeJSON(KEYS.learned, learned);
+  const link = rememberBarcodeLink({
+    store,
+    code: raw,
+    normalized,
+    name,
+    pending: !!row.pending,
+  });
   if (send) {
     enqueue({
       action: "saveBarcode",
@@ -1009,9 +1112,10 @@ export function saveBarcode(code, store, itemName, options = {}) {
       store,
       name,
       notes: options.notes || (options.pending ? "New product" : "Matched in the app"),
+      linkId: link.id,
     });
   }
-  return { code: raw, normalized, store, name, pending: !!row.pending };
+  return { code: raw, normalized, store, name, pending: !!row.pending, linkId: link.id };
 }
 
 // Add a product that is not on the September list yet. It stays on this phone
@@ -1050,12 +1154,14 @@ export function addItem(store, { name, ticketValue } = {}) {
 // Staff counted how many pieces are in 10 ounces. Divide by 10 and remember it
 // on this phone immediately. Write column D unless Testing mode is blocking
 // new-item saves. "Don't save counts" does not block this.
-export function savePiecesPer10(store, itemName, piecesPer10) {
+export function savePiecesPer10(store, itemName, piecesPer10, ounces = 10) {
   const name = String(itemName || "").trim();
   const pieces = typeof piecesPer10 === "number" ? piecesPer10 : Number(piecesPer10);
+  const oz = Number(ounces);
   if (!name || (store !== "WPR" && store !== "CPR")) return null;
   if (!Number.isSafeInteger(pieces) || pieces <= 0) return null;
-  const perOz = pieces / 10;
+  if (!(oz > 0)) return null;
+  const perOz = pieces / oz;
   const saved = readPerOzMap();
   saved[store + ":" + name] = perOz;
   mem.perOz = saved;
@@ -1079,6 +1185,7 @@ export function savePiecesPer10(store, itemName, piecesPer10) {
       store,
       item: name,
       piecesPer10: pieces,
+      ounces: oz,
     });
   }
   return perOz;
@@ -1158,8 +1265,8 @@ function cleanEntry(e) {
     perOz: e.perOz ?? null,
     kind: e.kind,
   };
-  for (const key of ["count", "boxes", "loose", "perBox", "packWord", "lb", "oz", "q1", "q2", "gross", "frontCount"]) {
-    if (e[key] !== undefined && e[key] !== null) out[key] = e[key];
+  for (const key of ["count", "boxes", "loose", "perBox", "packWord", "lb", "oz", "q1", "q2", "gross", "frontCount", "container", "containerNote", "tareLb", "tareOz", "grossLb", "grossOz"]) {
+    if (e[key] !== undefined && e[key] !== null && e[key] !== "") out[key] = e[key];
   }
   if (e.frontFull === true || e.frontFull === false) out.frontFull = e.frontFull;
   if (e.sheetApplied) out.sheetApplied = { ...e.sheetApplied };
@@ -1331,6 +1438,174 @@ export function savePackSize(store, itemName, size, unit) {
   return { size: count, unit: word };
 }
 
+function readContainers() {
+  if (mem.containers == null) {
+    const saved = readJSON(KEYS.containers, []);
+    mem.containers = Array.isArray(saved) ? saved : [];
+  }
+  return mem.containers;
+}
+
+function applyContainers(rows) {
+  const local = readContainers().filter((row) => row.localOnly);
+  const names = new Set((rows || []).map((row) => String(row.name || "").trim().toLowerCase()));
+  mem.containers = [...(rows || []), ...local.filter((row) => !names.has(String(row.name || "").trim().toLowerCase()))];
+  writeJSON(KEYS.containers, mem.containers);
+}
+
+export function listContainers() {
+  return readContainers().map((row) => ({
+    name: String(row.name || "").trim(),
+    lb: Number(row.lb) || 0,
+    oz: Number(row.oz) || 0,
+  })).filter((row) => row.name);
+}
+
+export function saveContainer(name, lb, oz) {
+  const trimmed = String(name || "").trim();
+  const pounds = Number(lb) || 0;
+  const ounces = Number(oz) || 0;
+  if (!trimmed || pounds < 0 || ounces < 0) return null;
+  const rows = readContainers().filter((row) => String(row.name || "").trim().toLowerCase() !== trimmed.toLowerCase());
+  rows.push({ name: trimmed, lb: pounds, oz: ounces, localOnly: true });
+  mem.containers = rows;
+  writeJSON(KEYS.containers, rows);
+  if (sheetEnabled() && !getTesting().skipItems) {
+    enqueue({ action: "saveContainer", name: trimmed, lb: pounds, oz: ounces });
+  }
+  return { name: trimmed, lb: pounds, oz: ounces };
+}
+
+export function lastContainer(store, itemName) {
+  const map = readJSON(KEYS.lastContainer, {});
+  return map[store + ":" + itemName] || "";
+}
+
+export function rememberContainer(store, itemName, containerName) {
+  const map = readJSON(KEYS.lastContainer, {});
+  map[store + ":" + itemName] = containerName || "";
+  writeJSON(KEYS.lastContainer, map);
+}
+
+function readBackContainers() {
+  if (mem.backContainers == null) {
+    const saved = readJSON(KEYS.backContainers, []);
+    mem.backContainers = Array.isArray(saved) ? saved : [];
+  }
+  return mem.backContainers;
+}
+
+function applyBackContainers(rows) {
+  mem.backContainers = Array.isArray(rows) ? rows : [];
+  writeJSON(KEYS.backContainers, mem.backContainers);
+}
+
+export function backOptions(store, itemName) {
+  const wanted = String(itemName || "").trim().toLowerCase();
+  if (!wanted || (store !== "WPR" && store !== "CPR")) return [];
+  const saved = readMeasures().back || {};
+  return readBackContainers().filter((row) => {
+    const label = String(store === "CPR" ? row.CPR : row.WPR || "").trim().toLowerCase();
+    return label && label === wanted && String(row.container || "").trim();
+  }).map((row) => {
+    const container = String(row.container).trim();
+    const key = store + ":" + itemName + ":" + container;
+    const full = saved[key] > 0 ? saved[key] : row.fullCount;
+    return { container, fullCount: full > 0 ? Number(full) : null };
+  });
+}
+
+export function containerPieces(fullCount, quarters) {
+  if (!(Number(fullCount) > 0)) return null;
+  return Math.round(Number(fullCount) * Number(quarters) / 4);
+}
+
+export function saveBackFull(store, itemName, container, pieces) {
+  const name = String(itemName || "").trim();
+  const box = String(container || "").trim();
+  const count = Number(pieces);
+  if (!name || !box || (store !== "WPR" && store !== "CPR")) return null;
+  if (!Number.isSafeInteger(count) || count <= 0) return null;
+  const saved = readMeasures();
+  saved.back = saved.back || {};
+  saved.back[store + ":" + name + ":" + box] = count;
+  mem.measures = saved;
+  writeJSON(KEYS.measures, saved);
+  if (sheetEnabled() && !getTesting().skipItems) {
+    enqueue({ action: "saveBackFull", store, item: name, container: box, pieces: count });
+  }
+  return count;
+}
+
+function readLinks() {
+  if (mem.links == null) {
+    const saved = readJSON(KEYS.barcodeLinks, []);
+    mem.links = Array.isArray(saved) ? saved : [];
+  }
+  return mem.links;
+}
+
+function writeLinks(links) {
+  mem.links = links.slice(0, 10);
+  writeJSON(KEYS.barcodeLinks, mem.links);
+}
+
+function rememberBarcodeLink(link) {
+  const links = readLinks();
+  const row = {
+    id: makeId(),
+    at: Date.now(),
+    undone: false,
+    synced: false,
+    previousName: "",
+    mode: "",
+    ...link,
+  };
+  writeLinks([row, ...links.filter((item) => item.code !== row.code || item.store !== row.store)]);
+  return row;
+}
+
+function noteBarcodeSynced(linkId, result) {
+  if (!linkId || !result) return;
+  const links = readLinks();
+  const link = links.find((item) => item.id === linkId);
+  if (!link) return;
+  link.synced = true;
+  link.mode = result.mode || "";
+  link.row = result.row || 0;
+  link.previousName = result.previousName || "";
+  writeLinks(links);
+}
+
+export function getBarcodeLinks() {
+  return readLinks().slice(0, 10).map((item) => ({ ...item }));
+}
+
+export function undoBarcodeLink(linkId) {
+  const links = readLinks();
+  const link = links.find((item) => item.id === linkId);
+  if (!link || link.undone) return null;
+  const learned = readLearned();
+  delete learned[link.store + ":" + link.normalized];
+  mem.learned = learned;
+  writeJSON(KEYS.learned, learned);
+  const box = readOutbox().filter((job) => !(job.action === "saveBarcode" && job.linkId === link.id));
+  writeOutbox(box);
+  link.undone = true;
+  writeLinks(links);
+  if (link.synced && sheetEnabled() && !getTesting().skipBarcodes) {
+    enqueue({
+      action: "undoBarcode",
+      store: link.store,
+      code: link.code,
+      name: link.name,
+      previousName: link.previousName || "",
+      mode: link.mode || "updated",
+    });
+  }
+  return { ...link };
+}
+
 function applyPackSizes(rows) {
   const packs = readPacks();
   for (const row of rows || []) {
@@ -1368,7 +1643,10 @@ export function resetLocalData() {
   mem.outbox = [];
   mem.perOz = {};
   mem.binItems = [];
-  mem.measures = { fullBin: {}, front: {} };
+  mem.measures = { fullBin: {}, front: {}, back: {} };
+  mem.containers = [];
+  mem.backContainers = [];
+  mem.links = [];
   writeJSON(KEYS.learned, mem.learned);
   writeJSON(KEYS.session, mem.session);
   writeJSON(KEYS.packs, mem.packs);
@@ -1382,6 +1660,10 @@ export function resetLocalData() {
   writeJSON(KEYS.perOz, {});
   writeJSON(KEYS.binItems, []);
   writeJSON(KEYS.measures, mem.measures);
+  writeJSON(KEYS.containers, []);
+  writeJSON(KEYS.backContainers, []);
+  writeJSON(KEYS.barcodeLinks, []);
+  writeJSON(KEYS.lastContainer, {});
   try {
     globalThis.localStorage?.removeItem(KEYS.barcodes);
   } catch {
@@ -1401,4 +1683,7 @@ export function reloadLocalData() {
   mem.perOz = null;
   mem.binItems = undefined;
   mem.measures = null;
+  mem.containers = null;
+  mem.backContainers = null;
+  mem.links = null;
 }
